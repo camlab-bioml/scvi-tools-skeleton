@@ -7,12 +7,12 @@ from scvi.model._utils import _init_library_size
 from scvi.model.base import BaseModelClass, UnsupervisedTrainingMixin, VAEMixin
 from scvi.utils import setup_anndata_dsp
 
-from ._mymodule import MyModule
+from ._hmivae_module import hmiVAE
 
 logger = logging.getLogger(__name__)
 
 
-class MyModel(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass):
+class hmivaeModel(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass):
     """
     Skeleton for an scvi-tools model.
 
@@ -47,7 +47,7 @@ class MyModel(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass):
         n_layers: int = 1,
         **model_kwargs,
     ):
-        super(MyModel, self).__init__(adata)
+        super(hmiVAE, self).__init__(adata)
 
         library_log_means, library_log_vars = _init_library_size(
             adata, self.summary_stats["n_batch"]
@@ -55,7 +55,7 @@ class MyModel(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass):
 
         # self.summary_stats provides information about anndata dimensions and other tensor info
 
-        self.module = MyModule(
+        self.module = hmiVAE(
             n_input=self.summary_stats["n_vars"],
             n_hidden=n_hidden,
             n_latent=n_latent,
@@ -74,6 +74,11 @@ class MyModel(VAEMixin, UnsupervisedTrainingMixin, BaseModelClass):
     @setup_anndata_dsp.dedent
     def setup_anndata(
         adata: AnnData,
+        protein_correlations_obsm_key: str,
+        cell_morphology_obsm_key: str,
+        cell_spatial_context_obsm_key: str,
+        protein_correlations_names_uns_key: Optional[str] = None,
+        cell_morphology_names_uns_key: Optional[str] = None,
         batch_key: Optional[str] = None,
         labels_key: Optional[str] = None,
         layer: Optional[str] = None,

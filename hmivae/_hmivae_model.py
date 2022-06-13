@@ -77,7 +77,6 @@ class hmivaeModel(pl.LightningModule):
         )
 
         # self.summary_stats provides information about anndata dimensions and other tensor info
-
         self.module = hmiVAE(
             input_exp_dim=input_exp_dim,
             input_corr_dim=input_corr_dim,
@@ -102,18 +101,20 @@ class hmivaeModel(pl.LightningModule):
             input_spcont_dim,
         )
         # necessary line to get params that will be used for saving/loading
-        self.init_params_ = self._get_init_params(locals())
+        # self.init_params_ = self._get_init_params(locals())
 
         logger.info("The model has been initialized")
 
-    def train(self):
+    def train(
+        self,
+    ):  # misnomer, both train and test are here (either rename or separate)
 
-        trainer = Trainer()
+        trainer = Trainer(max_epochs=10)
 
         trainer.fit(self.module, self.train_batch)  # training, add wandb
         trainer.test(dataloaders=self.test_batch)  # test, add wandb
 
-        return trainer()
+        # return trainer
 
     # @setup_anndata_dsp.dedent
     @staticmethod

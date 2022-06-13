@@ -38,10 +38,8 @@ class EncoderHMIVAE(nn.Module):
 
         self.input_corr = nn.Linear(input_corr_dim, E_cr)
         self.corr_hidden = nn.Linear(E_cr, E_cr)
-
         self.input_morph = nn.Linear(input_morph_dim, E_mr)
         self.morph_hidden = nn.Linear(E_mr, E_mr)
-
         self.input_spatial_context = nn.Linear(input_spcont_dim, E_sc)
         self.spatial_context_hidden = nn.Linear(E_sc, E_sc)
 
@@ -62,7 +60,7 @@ class EncoderHMIVAE(nn.Module):
         h_morphology = F.elu(self.input_morph(x_morphology))
         h_morphology2 = F.elu(self.morph_hidden(h_morphology))
 
-        z1 = torch.cat([h_mean2, h_correlations2, h_morphology2], 1)
+        # z1 = torch.cat([h_mean2, h_correlations2, h_morphology2], 1)
 
         h_spatial_context = F.elu(self.input_spatial_context(x_spatial_context))
         h_spatial_context2 = F.elu(self.spatial_context_hidden(h_spatial_context))
@@ -76,7 +74,7 @@ class EncoderHMIVAE(nn.Module):
 
         log_std_z = self.std_z(h)
 
-        return mu_z, log_std_z, z1
+        return mu_z, log_std_z
 
 
 class DecoderHMIVAE(nn.Module):
@@ -109,6 +107,11 @@ class DecoderHMIVAE(nn.Module):
     ):
         super().__init__()
         hidden_dim = E_me + E_cr + E_mr + E_sc
+        self.E_me = E_me
+        self.E_cr = E_cr
+        self.E_mr = E_mr
+        self.E_sc = E_sc
+        self.input = nn.Linear(latent_dim, hidden_dim)
         self.linear = nn.ModuleList(
             [nn.Linear(hidden_dim, hidden_dim) for i in range(n_hidden)]
         )
@@ -153,13 +156,13 @@ class DecoderHMIVAE(nn.Module):
         mu_x_exp = self.mu_x_exp(h2_mean)
         std_x_exp = self.std_x_exp(h2_mean)
 
-        if self.use_weights:
-            with torch.no_grad():
-                weights = self.get_corr_weights_per_cell(
-                    mu_x_exp.detach()
-                )  # calculating correlation weights
-        else:
-            weights = None
+        # if self.use_weights:
+        #     with torch.no_grad():
+        #         weights = self.get_corr_weights_per_cell(
+        #             mu_x_exp.detach()
+        #         )  # calculating correlation weights
+        # else:
+        #     weights = None
 
         mu_x_corr = self.mu_x_corr(h2_correlations)
         std_x_corr = self.std_x_corr(h2_correlations)
@@ -179,5 +182,5 @@ class DecoderHMIVAE(nn.Module):
             std_x_morph,
             mu_x_spatial_context,
             std_x_spatial_context,
-            weights,
+            # weights,
         )

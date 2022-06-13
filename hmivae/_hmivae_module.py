@@ -95,7 +95,7 @@ class hmiVAE(pl.LightningModule):
         s,
         m,
         c,
-        weights=None,
+        # weights=None,
     ):
         """Takes in the parameters output from the decoder,
         and the original input x, and gives the reconstruction
@@ -127,15 +127,16 @@ class hmiVAE(pl.LightningModule):
         )
 
         log_p_xz_exp = p_rec_exp.log_prob(y)
+        log_p_xz_corr = p_rec_corr.log_prob(s)
         log_p_xz_morph = p_rec_morph.log_prob(m)
         log_p_xz_spcont = p_rec_spcont.log_prob(c)  # already dense matrix
 
-        if weights is None:
-            log_p_xz_corr = p_rec_corr.log_prob(s)
-        else:
-            log_p_xz_corr = torch.mul(
-                weights, p_rec_corr.log_prob(s)
-            )  # does element-wise multiplication
+        # if weights is None:
+        #     log_p_xz_corr = p_rec_corr.log_prob(s)
+        # else:
+        #     log_p_xz_corr = torch.mul(
+        #         weights, p_rec_corr.log_prob(s)
+        #     )  # does element-wise multiplication
 
         log_p_xz_exp = log_p_xz_exp.sum(-1)
         log_p_xz_corr = log_p_xz_corr.sum(-1)
@@ -161,7 +162,7 @@ class hmiVAE(pl.LightningModule):
         s,
         m,
         c,
-        weights=None,
+        # weights=None,
     ):
         kl_div = self.KL_div(enc_x_mu, enc_x_logstd, z)
 
@@ -178,7 +179,7 @@ class hmiVAE(pl.LightningModule):
             s,
             m,
             c,
-            weights,
+            # weights,
         )
         return (
             kl_div,
@@ -228,7 +229,7 @@ class hmiVAE(pl.LightningModule):
             log_std_x_morph_hat,
             mu_x_spcont_hat,
             log_std_x_spcont_hat,
-            weights,
+            # weights,
         ) = self.decoder(z_samples)
 
         (
@@ -253,7 +254,7 @@ class hmiVAE(pl.LightningModule):
             S,
             M,
             spatial_context,
-            weights,
+            # weights,
         )
 
         recon_loss = (
@@ -267,15 +268,15 @@ class hmiVAE(pl.LightningModule):
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        return (
-            loss,
-            kl_div.mean().item(),
-            recon_loss.mean().item(),
-            recon_lik_me.mean().item(),
-            recon_lik_corr.mean().item(),
-            recon_lik_mor.mean().item(),
-            recon_lik_sc.mean().item(),
-        )
+        return {
+            "loss": loss,
+            "kl_div": kl_div.mean().item(),
+            "recon_loss": recon_loss.mean().item(),
+            "recon_lik_me": recon_lik_me.mean().item(),
+            "recon_lik_corr": recon_lik_corr.mean().item(),
+            "recon_lik_mor": recon_lik_mor.mean().item(),
+            "recon_lik_sc": recon_lik_sc.mean().item(),
+        }
 
     def test_step(
         self,
@@ -298,7 +299,7 @@ class hmiVAE(pl.LightningModule):
         M = test_batch[2]
         spatial_context = test_batch[3]
 
-        mu_z, log_std_z, z1 = self.encode(Y, S, M, spatial_context)
+        mu_z, log_std_z = self.encoder(Y, S, M, spatial_context)
 
         z_samples = self.reparameterization(mu_z, log_std_z)
 
@@ -312,8 +313,8 @@ class hmiVAE(pl.LightningModule):
             log_std_x_morph_hat,
             mu_x_spcont_hat,
             log_std_x_spcont_hat,
-            weights,
-        ) = self.decode(z_samples)
+            # weights,
+        ) = self.decoder(z_samples)
 
         (
             kl_div,
@@ -337,7 +338,7 @@ class hmiVAE(pl.LightningModule):
             S,
             M,
             spatial_context,
-            weights,
+            # weights,
         )
 
         recon_loss = (
@@ -351,15 +352,15 @@ class hmiVAE(pl.LightningModule):
 
         self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
 
-        return (
-            loss,
-            kl_div.mean().item(),
-            recon_loss.mean().item(),
-            recon_lik_me.mean().item(),
-            recon_lik_corr.mean().item(),
-            recon_lik_mor.mean().item(),
-            recon_lik_sc.mean().item(),
-        )
+        return {
+            "loss": loss,
+            "kl_div": kl_div.mean().item(),
+            "recon_loss": recon_loss.mean().item(),
+            "recon_lik_me": recon_lik_me.mean().item(),
+            "recon_lik_corr": recon_lik_corr.mean().item(),
+            "recon_lik_mor": recon_lik_mor.mean().item(),
+            "recon_lik_sc": recon_lik_sc.mean().item(),
+        }
 
     def configure_optimizers(self):
         """Optimizer"""

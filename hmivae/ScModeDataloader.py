@@ -51,6 +51,7 @@ class ScModeDataloader(TensorDataset):
         self.Y = torch.tensor(Y).float()
         self.S = torch.tensor(S).float()
         self.M = torch.tensor(M).float()
+        self.C = self.get_spatial_context()
 
         self.samples_onehot = self.one_hot_encoding()
 
@@ -77,9 +78,10 @@ class ScModeDataloader(TensorDataset):
         )  # adjacency matrix
         concatenated_features = torch.cat((self.Y, self.S, self.M), 1)
 
-        self.C = torch.smm(  # normalize for the number of adjacent cells
+        C = torch.smm(  # normalize for the number of adjacent cells
             adj_mat, concatenated_features
         ).to_dense()  # spatial context for each cell
+        return C
 
     def __getitem__(self, idx):
 

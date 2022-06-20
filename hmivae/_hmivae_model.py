@@ -3,8 +3,10 @@ from typing import List, Optional
 
 import numpy as np
 import pytorch_lightning as pl
+import torch
 from _hmivae_module import hmiVAE
 from anndata import AnnData
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.trainer import Trainer
 from scipy.stats.mstats import winsorize
 from ScModeDataloader import ScModeDataloader
@@ -60,17 +62,14 @@ class hmivaeModel(pl.LightningModule):
         E_mr: int = 32,
         E_sc: int = 32,
         latent_dim: int = 10,
+        n_covariates: int = 0,
         n_hidden: int = 1,
         **model_kwargs,
     ):
         # super(hmivaeModel, self).__init__(adata)
         super().__init__()
 
-        # library_log_means, library_log_vars = _init_library_size(
-        #     adata, self.summary_stats["n_batch"]
-        # )
-
-        self.train_batch, self.test_batch = self.setup_anndata(
+        self.train_batch, self.test_batch, self.n_covariates = self.setup_anndata(
             adata=adata,
             protein_correlations_obsm_key="correlations",
             cell_morphology_obsm_key="morphology",
@@ -87,18 +86,21 @@ class hmivaeModel(pl.LightningModule):
             E_mr=E_mr,
             E_sc=E_sc,
             latent_dim=latent_dim,
+            n_covariates=self.n_covariates,
             n_hidden=n_hidden,
             **model_kwargs,
         )
         self._model_summary_string = (
-            "hmiVAE model with the following parameters: \nn_latent:{}"
-            "n_protein_expression:{}, n_correlation:{}, n_morphology:{}, n_spatial_context:{}"
+            "hmiVAE model with the following parameters: \n n_latent:{}, "
+            "n_protein_expression:{}, n_correlation:{}, n_morphology:{}, n_spatial_context:{}, "
+            "n_covariates:{} "
         ).format(
             latent_dim,
             input_exp_dim,
             input_corr_dim,
             input_morph_dim,
             input_spcont_dim,
+            n_covariates,
         )
         # necessary line to get params that will be used for saving/loading
         # self.init_params_ = self._get_init_params(locals())
@@ -109,12 +111,44 @@ class hmivaeModel(pl.LightningModule):
         self,
     ):  # misnomer, both train and test are here (either rename or separate)
 
-        trainer = Trainer(max_epochs=10)
+        early_stopping = EarlyStopping(
+            monitor="test_loss", mode="min", patience=3
+        )  # need to add this
 
-        trainer.fit(self.module, self.train_batch)  # training, add wandb
-        trainer.test(dataloaders=self.test_batch)  # test, add wandb
+        trainer = Trainer(max_epochs=10, callbacks=[early_stopping])
+
+        trainer.fit(
+            self.module, self.train_batch, self.test_batch
+        )  # training, add wandb
+        # trainer.test(dataloaders=self.test_batch)  # test, add wandb
 
         # return trainer
+
+    @torch.no_grad()
+    def get_latent_representation(
+        self,
+        adata: AnnData,
+        protein_correlations_obsm_key: str,
+        cell_morphology_obsm_key: str,
+        is_trained_model: Optional[bool] = True,
+    ) -> np.ndarray:
+        """
+        Gives the latent representation of each cell.
+        """
+        if is_trained_model:
+            data_train, data_test = self.setup_anndata(
+                adata,
+                protein_correlations_obsm_key,
+                cell_morphology_obsm_key,
+                is_trained_model=is_trained_model,
+            )
+            train_mu_z = self.module.inference(data_train)
+            test_mu_z = self.module.inference(data_test)
+            return train_mu_z, test_mu_z
+        else:
+            raise Exception(
+                "No latent representation to produce! Model is not trained!"
+            )
 
     # @setup_anndata_dsp.dedent
     @staticmethod
@@ -136,6 +170,7 @@ class hmivaeModel(pl.LightningModule):
         train_prop: Optional[float] = 0.75,
         apply_winsorize: Optional[bool] = True,
         arctanh_corrs: Optional[bool] = False,
+        is_trained_model: Optional[bool] = False,
         random_seed: Optional[int] = 1234,
         copy: bool = False,
     ) -> Optional[AnnData]:
@@ -196,6 +231,9 @@ class hmivaeModel(pl.LightningModule):
         data_test = ScModeDataloader(adata_test, data_train.scalers)
 
         loader_train = DataLoader(data_train, batch_size=batch_size, shuffle=True)
-        loader_test = DataLoader(data_test, batch_size=batch_size, shuffle=True)
+        loader_test = DataLoader(data_test, batch_size=batch_size)  # shuffle=True)
 
-        return loader_train, loader_test
+        if is_trained_model:
+            return data_train, data_test
+        else:
+            return loader_train, loader_test, len(samples_train)

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,19 +21,22 @@ class EncoderHMIVAE(nn.Module):
 
     def __init__(
         self,
-        input_exp_dim,
-        input_corr_dim,
-        input_morph_dim,
-        input_spcont_dim,
-        E_me,
-        E_cr,
-        E_mr,
-        E_sc,
-        latent_dim,
-        n_hidden=1,
+        input_exp_dim: int,
+        input_corr_dim: int,
+        input_morph_dim: int,
+        input_spcont_dim: int,
+        E_me: int,
+        E_cr: int,
+        E_mr: int,
+        E_sc: int,
+        latent_dim: int,
+        n_covariates: Optional[int] = 0,
+        n_hidden: Optional[int] = 1,
     ):
         super().__init__()
-        hidden_dim = E_me + E_cr + E_mr + E_sc
+        hidden_dim = E_me + E_cr + E_mr + E_sc + n_covariates
+
+        self.input_cov = nn.Linear(n_covariates, n_covariates)
 
         self.input_exp = nn.Linear(input_exp_dim, E_me)
         self.exp_hidden = nn.Linear(E_me, E_me)
@@ -50,7 +55,14 @@ class EncoderHMIVAE(nn.Module):
         self.mu_z = nn.Linear(hidden_dim, latent_dim)
         self.std_z = nn.Linear(hidden_dim, latent_dim)
 
-    def forward(self, x_mean, x_correlations, x_morphology, x_spatial_context):
+    def forward(
+        self,
+        x_mean: torch.Tensor,
+        x_correlations: torch.Tensor,
+        x_morphology: torch.Tensor,
+        x_spatial_context: torch.Tensor,
+        cov_list=torch.Tensor([]),
+    ):
         h_mean = F.elu(self.input_exp(x_mean))
         h_mean2 = F.elu(self.exp_hidden(h_mean))
 
@@ -60,12 +72,14 @@ class EncoderHMIVAE(nn.Module):
         h_morphology = F.elu(self.input_morph(x_morphology))
         h_morphology2 = F.elu(self.morph_hidden(h_morphology))
 
-        # z1 = torch.cat([h_mean2, h_correlations2, h_morphology2], 1)
-
         h_spatial_context = F.elu(self.input_spatial_context(x_spatial_context))
         h_spatial_context2 = F.elu(self.spatial_context_hidden(h_spatial_context))
 
-        h = torch.cat([h_mean2, h_correlations2, h_morphology2, h_spatial_context2], 1)
+        h_cov = F.elu(self.input_cov(cov_list))
+
+        h = torch.cat(
+            [h_mean2, h_correlations2, h_morphology2, h_spatial_context2, h_cov], 1
+        )
 
         for net in self.linear:
             h = F.elu(net(h))
@@ -94,19 +108,21 @@ class DecoderHMIVAE(nn.Module):
 
     def __init__(
         self,
-        latent_dim,
-        E_me,
-        E_cr,
-        E_mr,
-        E_sc,
-        input_exp_dim,
-        input_corr_dim,
-        input_morph_dim,
-        input_spcont_dim,
-        n_hidden=1,
+        latent_dim: int,
+        E_me: int,
+        E_cr: int,
+        E_mr: int,
+        E_sc: int,
+        input_exp_dim: int,
+        input_corr_dim: int,
+        input_morph_dim: int,
+        input_spcont_dim: int,
+        n_covariates: Optional[int] = 0,
+        n_hidden: Optional[int] = 1,
     ):
         super().__init__()
-        hidden_dim = E_me + E_cr + E_mr + E_sc
+        hidden_dim = E_me + E_cr + E_mr + E_sc + n_covariates
+        latent_dim = latent_dim + n_covariates
         self.E_me = E_me
         self.E_cr = E_cr
         self.E_mr = E_mr
@@ -135,8 +151,12 @@ class DecoderHMIVAE(nn.Module):
         self.mu_x_spcont = nn.Linear(E_sc, input_spcont_dim)
         self.std_x_spcont = nn.Linear(E_sc, input_spcont_dim)
 
-    def forward(self, z):
-        out = F.elu(self.input(z))
+        self.covariates_out_mu = nn.Linear(n_covariates, n_covariates)
+        self.covariates_out_std = nn.Linear(n_covariates, n_covariates)
+
+    def forward(self, z, cov_list):
+        z_s = torch.cat([z, cov_list], 1)
+        out = F.elu(self.input(z_s))
         for net in self.linear:
             out = F.elu(net(out))
 
@@ -150,8 +170,20 @@ class DecoderHMIVAE(nn.Module):
             )
         )
         h2_spatial_context = F.elu(
-            self.spatial_context_hidden(out[:, self.E_me + self.E_cr + self.E_mr :])
+            self.spatial_context_hidden(
+                out[
+                    :,
+                    self.E_me
+                    + self.E_cr
+                    + self.E_mr : self.E_me
+                    + self.E_cr
+                    + self.E_mr
+                    + self.E_sc,
+                ]
+            )
         )
+
+        covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
 
         mu_x_exp = self.mu_x_exp(h2_mean)
         std_x_exp = self.std_x_exp(h2_mean)
@@ -173,6 +205,9 @@ class DecoderHMIVAE(nn.Module):
         mu_x_spatial_context = self.mu_x_spcont(h2_spatial_context)
         std_x_spatial_context = self.std_x_spcont(h2_spatial_context)
 
+        covariates_mu = self.covariates_out_mu(covariates)
+        covariates_std = self.covariates_out_std(covariates)
+
         return (
             mu_x_exp,
             std_x_exp,
@@ -182,5 +217,7 @@ class DecoderHMIVAE(nn.Module):
             std_x_morph,
             mu_x_spatial_context,
             std_x_spatial_context,
+            covariates_mu,
+            covariates_std,
             # weights,
         )

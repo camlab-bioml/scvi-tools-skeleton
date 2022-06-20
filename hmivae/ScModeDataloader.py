@@ -70,7 +70,7 @@ class ScModeDataloader(TensorDataset):
 
         df = df.reindex(columns=self.adata.obs.Sample_name.unique().tolist())
 
-        return torch.tensor(df.to_numpy())
+        return torch.tensor(df.to_numpy()).float()
 
     def get_spatial_context(self):
         adj_mat = sparse_numpy_to_torch(

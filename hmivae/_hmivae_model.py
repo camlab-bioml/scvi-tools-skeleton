@@ -1,12 +1,14 @@
 import logging
 from typing import List, Optional
 
+import anndata as ad
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from _hmivae_module import hmiVAE
 from anndata import AnnData
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from scipy.stats.mstats import winsorize
 from ScModeDataloader import ScModeDataloader
@@ -69,8 +71,10 @@ class hmivaeModel(pl.LightningModule):
         # super(hmivaeModel, self).__init__(adata)
         super().__init__()
 
+        self.adata = adata
+
         self.train_batch, self.test_batch, self.n_covariates = self.setup_anndata(
-            adata=adata,
+            adata=self.adata,
             protein_correlations_obsm_key="correlations",
             cell_morphology_obsm_key="morphology",
         )
@@ -109,13 +113,16 @@ class hmivaeModel(pl.LightningModule):
 
     def train(
         self,
+        max_epochs=100,
     ):  # misnomer, both train and test are here (either rename or separate)
 
-        early_stopping = EarlyStopping(
-            monitor="test_loss", mode="min", patience=3
-        )  # need to add this
+        early_stopping = EarlyStopping(monitor="test_loss", mode="min", patience=3)
 
-        trainer = Trainer(max_epochs=10, callbacks=[early_stopping])
+        wandb_logger = WandbLogger(project="hmiVAE_init_trial_runs")
+
+        trainer = Trainer(
+            max_epochs=max_epochs, callbacks=[early_stopping], logger=wandb_logger
+        )
 
         trainer.fit(
             self.module, self.train_batch, self.test_batch
@@ -127,24 +134,25 @@ class hmivaeModel(pl.LightningModule):
     @torch.no_grad()
     def get_latent_representation(
         self,
-        adata: AnnData,
         protein_correlations_obsm_key: str,
         cell_morphology_obsm_key: str,
         is_trained_model: Optional[bool] = True,
-    ) -> np.ndarray:
+    ) -> AnnData:
         """
         Gives the latent representation of each cell.
         """
         if is_trained_model:
-            data_train, data_test = self.setup_anndata(
-                adata,
+            adata_train, adata_test, data_train, data_test = self.setup_anndata(
+                self.adata,
                 protein_correlations_obsm_key,
                 cell_morphology_obsm_key,
                 is_trained_model=is_trained_model,
             )
-            train_mu_z = self.module.inference(data_train)
-            test_mu_z = self.module.inference(data_test)
-            return train_mu_z, test_mu_z
+            # print(data_train.samples_onehot.size())
+            adata_train.obsm["VAE"] = self.module.inference(data_train)
+            adata_test.obsm["VAE"] = self.module.inference(data_test)
+            # test_mu_z = self.module.inference(data_test) #leaving it out for now, how to incorporate one-hot encoding here?
+            return ad.concat([adata_train, adata_test], uns_merge="first")
         else:
             raise Exception(
                 "No latent representation to produce! Model is not trained!"
@@ -234,6 +242,6 @@ class hmivaeModel(pl.LightningModule):
         loader_test = DataLoader(data_test, batch_size=batch_size)  # shuffle=True)
 
         if is_trained_model:
-            return data_train, data_test
+            return adata_train, adata_test, data_train, data_test
         else:
             return loader_train, loader_test, len(samples_train)

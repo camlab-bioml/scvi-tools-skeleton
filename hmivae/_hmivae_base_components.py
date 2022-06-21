@@ -151,11 +151,13 @@ class DecoderHMIVAE(nn.Module):
         self.mu_x_spcont = nn.Linear(E_sc, input_spcont_dim)
         self.std_x_spcont = nn.Linear(E_sc, input_spcont_dim)
 
-        self.covariates_out_mu = nn.Linear(n_covariates, n_covariates)
-        self.covariates_out_std = nn.Linear(n_covariates, n_covariates)
+        # self.covariates_out_mu = nn.Linear(n_covariates, n_covariates) #this is one-hot
+        # self.covariates_out_std = nn.Linear(n_covariates, n_covariates)
 
     def forward(self, z, cov_list):
-        z_s = torch.cat([z, cov_list], 1)
+        z_s = torch.cat(
+            [z, cov_list], 1
+        )  # takes in one-hot as input, doesn't need to be symmetric with the encoder, doesn't output it
         out = F.elu(self.input(z_s))
         for net in self.linear:
             out = F.elu(net(out))
@@ -183,7 +185,7 @@ class DecoderHMIVAE(nn.Module):
             )
         )
 
-        covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
+        # covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
 
         mu_x_exp = self.mu_x_exp(h2_mean)
         std_x_exp = self.std_x_exp(h2_mean)
@@ -205,8 +207,8 @@ class DecoderHMIVAE(nn.Module):
         mu_x_spatial_context = self.mu_x_spcont(h2_spatial_context)
         std_x_spatial_context = self.std_x_spcont(h2_spatial_context)
 
-        covariates_mu = self.covariates_out_mu(covariates)
-        covariates_std = self.covariates_out_std(covariates)
+        # covariates_mu = self.covariates_out_mu(covariates)
+        # covariates_std = self.covariates_out_std(covariates)
 
         return (
             mu_x_exp,
@@ -217,7 +219,7 @@ class DecoderHMIVAE(nn.Module):
             std_x_morph,
             mu_x_spatial_context,
             std_x_spatial_context,
-            covariates_mu,
-            covariates_std,
+            # covariates_mu,
+            # covariates_std,
             # weights,
         )

@@ -97,13 +97,10 @@ class hmiVAE(pl.LightningModule):
         dec_x_logstd_morph,
         dec_x_mu_spcont,
         dec_x_logstd_spcont,
-        covariates_mu,
-        covariates_std,
         y,
         s,
         m,
         c,
-        cov_list,
         # weights=None,
     ):
         """Takes in the parameters output from the decoder,
@@ -128,20 +125,17 @@ class hmiVAE(pl.LightningModule):
         dec_x_std_corr = torch.exp(dec_x_logstd_corr)
         dec_x_std_morph = torch.exp(dec_x_logstd_morph)
         dec_x_std_spcont = torch.exp(dec_x_logstd_spcont)
-        cov_std = torch.exp(covariates_std)
         p_rec_exp = torch.distributions.Normal(dec_x_mu_exp, dec_x_std_exp + 1e-6)
         p_rec_corr = torch.distributions.Normal(dec_x_mu_corr, dec_x_std_corr + 1e-6)
         p_rec_morph = torch.distributions.Normal(dec_x_mu_morph, dec_x_std_morph + 1e-6)
         p_rec_spcont = torch.distributions.Normal(
             dec_x_mu_spcont, dec_x_std_spcont + 1e-6
         )
-        p_rec_cov = torch.distributions.Normal(covariates_mu, cov_std + 1e-6)
 
         log_p_xz_exp = p_rec_exp.log_prob(y)
         log_p_xz_corr = p_rec_corr.log_prob(s)
         log_p_xz_morph = p_rec_morph.log_prob(m)
         log_p_xz_spcont = p_rec_spcont.log_prob(c)  # already dense matrix
-        log_p_cov = p_rec_cov.log_prob(cov_list)
 
         # if weights is None:
         #     log_p_xz_corr = p_rec_corr.log_prob(s)
@@ -154,9 +148,13 @@ class hmiVAE(pl.LightningModule):
         log_p_xz_corr = log_p_xz_corr.sum(-1)
         log_p_xz_morph = log_p_xz_morph.sum(-1)
         log_p_xz_spcont = log_p_xz_spcont.sum(-1)
-        log_p_cov = log_p_cov.sum(-1)
 
-        return log_p_xz_exp, log_p_xz_corr, log_p_xz_morph, log_p_xz_spcont, log_p_cov
+        return (
+            log_p_xz_exp,
+            log_p_xz_corr,
+            log_p_xz_morph,
+            log_p_xz_spcont,
+        )
 
     def neg_ELBO(
         self,
@@ -170,14 +168,11 @@ class hmiVAE(pl.LightningModule):
         dec_x_logstd_morph,
         dec_x_mu_spcont,
         dec_x_logstd_spcont,
-        covariates_mu,
-        covariates_std,
         z,
         y,
         s,
         m,
         c,
-        cov_list,
         # weights=None,
     ):
         kl_div = self.KL_div(enc_x_mu, enc_x_logstd, z)
@@ -187,7 +182,6 @@ class hmiVAE(pl.LightningModule):
             recon_lik_corr,
             recon_lik_mor,
             recon_lik_sc,
-            reconstructed_covs,
         ) = self.em_recon_loss(
             dec_x_mu_exp,
             dec_x_logstd_exp,
@@ -197,13 +191,10 @@ class hmiVAE(pl.LightningModule):
             dec_x_logstd_morph,
             dec_x_mu_spcont,
             dec_x_logstd_spcont,
-            covariates_mu,
-            covariates_std,
             y,
             s,
             m,
             c,
-            cov_list,
             # weights,
         )
         return (
@@ -212,7 +203,6 @@ class hmiVAE(pl.LightningModule):
             recon_lik_corr,
             recon_lik_mor,
             recon_lik_sc,
-            reconstructed_covs,
         )
 
     def loss(self, kl_div, recon_loss, beta: float = 1.0):
@@ -265,8 +255,6 @@ class hmiVAE(pl.LightningModule):
             log_std_x_morph_hat,
             mu_x_spcont_hat,
             log_std_x_spcont_hat,
-            covariates_mu,
-            covariates_std,
             # weights,
         ) = self.decoder(z_samples, cov_list)
 
@@ -276,7 +264,6 @@ class hmiVAE(pl.LightningModule):
             recon_lik_corr,
             recon_lik_mor,
             recon_lik_sc,
-            reconstructed_covs,
         ) = self.neg_ELBO(
             mu_z,
             log_std_z,
@@ -288,14 +275,11 @@ class hmiVAE(pl.LightningModule):
             log_std_x_morph_hat,
             mu_x_spcont_hat,
             log_std_x_spcont_hat,
-            covariates_mu,
-            covariates_std,
             z_samples,
             Y,
             S,
             M,
             spatial_context,
-            cov_list,
             # weights,
         )
 
@@ -304,7 +288,6 @@ class hmiVAE(pl.LightningModule):
             + recon_weights[1] * recon_lik_corr
             + recon_weights[2] * recon_lik_mor
             + recon_weights[3] * recon_lik_sc
-            + reconstructed_covs
         )
 
         loss = self.loss(kl_div, recon_loss, beta=beta)
@@ -380,8 +363,6 @@ class hmiVAE(pl.LightningModule):
                 log_std_x_morph_hat,
                 mu_x_spcont_hat,
                 log_std_x_spcont_hat,
-                covariates_mu,
-                covariates_std,
                 # weights,
             ) = self.decoder(z_samples, cov_list)
 
@@ -391,7 +372,6 @@ class hmiVAE(pl.LightningModule):
                 recon_lik_corr,
                 recon_lik_mor,
                 recon_lik_sc,
-                reconstructed_covs,
             ) = self.neg_ELBO(
                 mu_z,
                 log_std_z,
@@ -403,14 +383,11 @@ class hmiVAE(pl.LightningModule):
                 log_std_x_morph_hat,
                 mu_x_spcont_hat,
                 log_std_x_spcont_hat,
-                covariates_mu,
-                covariates_std,
                 z_samples,
                 Y,
                 S,
                 M,
                 spatial_context,
-                cov_list,
                 # weights,
             )
 
@@ -419,7 +396,6 @@ class hmiVAE(pl.LightningModule):
                 + recon_weights[1] * recon_lik_corr
                 + recon_weights[2] * recon_lik_mor
                 + recon_weights[3] * recon_lik_sc
-                + reconstructed_covs
             )
 
             loss = self.loss(kl_div, recon_loss, beta=beta)
@@ -472,17 +448,43 @@ class hmiVAE(pl.LightningModule):
 
     @torch.no_grad()
     def inference(
-        self, data, indices: Optional[Sequence[int]] = None, give_mean: bool = True
+        self,
+        data,
+        indices: Optional[Sequence[int]] = None,
+        give_mean: bool = True,
+        categories: Optional[List[float]] = None,
     ) -> np.ndarray:
         """
         Return the latent representation of each cell.
         """
+        Y = data.Y
+        S = data.S
+        M = data.M
+        C = data.C
+        one_hot = data.samples_onehot
+        if one_hot.shape[1] < self.n_covariates:
+            zeros_pad = torch.Tensor(
+                np.zeros([one_hot.shape[0], self.n_covariates - one_hot.shape[1]])
+            )
+            one_hot = torch.cat([one_hot, zeros_pad], 1)
+        else:
+            one_hot = one_hot
+        batch_idx = data[-1]
+        if categories is not None:
+            if len(categories) > 0:
+                categories = torch.Tensor(categories)[batch_idx, :]
+            else:
+                categories = torch.Tensor(categories)
+        else:
+            categories = torch.Tensor([])
+
+        cov_list = torch.cat([one_hot, categories], 1).float()
         if give_mean:
-            mu_z, _ = self.encoder(data.Y, data.S, data.M, data.C)
+            mu_z, _ = self.encoder(Y, S, M, C, cov_list)
 
             return mu_z.numpy()
         else:
-            mu_z, log_std_z = self.encoder(data.Y, data.S, data.M, data.C)
+            mu_z, log_std_z = self.encoder(Y, S, M, C, cov_list)
             z = self.reparameterization(mu_z, log_std_z)
 
             return z.numpy()

@@ -66,16 +66,29 @@ class EncoderHMIVAE(nn.Module):
         h_mean = F.elu(self.input_exp(x_mean))
         h_mean2 = F.elu(self.exp_hidden(h_mean))
 
+        # print("h_mean2", h_mean2)
+
         h_correlations = F.elu(self.input_corr(x_correlations))
         h_correlations2 = F.elu(self.corr_hidden(h_correlations))
+
+        # print("h_correlations2", h_correlations2)
 
         h_morphology = F.elu(self.input_morph(x_morphology))
         h_morphology2 = F.elu(self.morph_hidden(h_morphology))
 
+        # print("h_morphology2", h_morphology2)
+
         h_spatial_context = F.elu(self.input_spatial_context(x_spatial_context))
         h_spatial_context2 = F.elu(self.spatial_context_hidden(h_spatial_context))
 
-        h_cov = F.elu(self.input_cov(cov_list))
+        # print("h_spatial_context2", h_spatial_context2)
+
+        if cov_list.shape[0] > 1:
+            h_cov = F.elu(self.input_cov(cov_list))
+
+            # print('h_cov', h_cov)
+        else:
+            h_cov = cov_list
 
         h = torch.cat(
             [h_mean2, h_correlations2, h_morphology2, h_spatial_context2, h_cov], 1

@@ -1,10 +1,12 @@
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence  # List
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from _hmivae_base_components import DecoderHMIVAE, EncoderHMIVAE
+
+# import hmivae
+from hmivae._hmivae_base_components import DecoderHMIVAE, EncoderHMIVAE
 
 # from anndata import AnnData
 
@@ -28,11 +30,20 @@ class hmiVAE(pl.LightningModule):
         E_sc: int = 32,
         latent_dim: int = 10,
         n_covariates: int = 0,
+        # cat_list: Optional[List[float]] = None,
+        use_covs: bool = False,
         n_hidden: int = 1,
+        batch_correct: bool = True,
     ):
         super().__init__()
         # hidden_dim = E_me + E_cr + E_mr + E_sc
         self.n_covariates = n_covariates
+
+        # self.cat_list = cat_list
+
+        self.batch_correct = batch_correct
+
+        self.use_covs = use_covs
 
         self.encoder = EncoderHMIVAE(
             input_exp_dim,
@@ -59,6 +70,8 @@ class hmiVAE(pl.LightningModule):
             input_spcont_dim,
             n_covariates=n_covariates,
         )
+
+        self.save_hyperparameters(ignore=["adata", "cat_list"])
 
     def reparameterization(self, mu, log_std):
         std = torch.exp(log_std)
@@ -215,7 +228,6 @@ class hmiVAE(pl.LightningModule):
         corr_weights=False,
         recon_weights=np.array([1.0, 1.0, 1.0, 1.0]),
         beta=1.0,
-        categories: Optional[List[float]] = None,
     ):
         """
         Carries out the training step.
@@ -229,18 +241,20 @@ class hmiVAE(pl.LightningModule):
         S = train_batch[1]
         M = train_batch[2]
         spatial_context = train_batch[3]
-        one_hot = train_batch[4]
-        batch_idx = train_batch[-1]
-        if categories is not None:
-            if len(categories) > 0:
-                categories = torch.Tensor(categories)[batch_idx, :]
-            else:
-                categories = torch.Tensor(categories)
+        # batch_idx = train_batch[-1]
+
+        if self.use_covs:
+            categories = train_batch[5]
         else:
             categories = torch.Tensor([])
 
-        cov_list = torch.cat([one_hot, categories], 1).float()
-        # print('train',cov_list.size())
+        if self.batch_correct:
+            one_hot = train_batch[4]
+
+            cov_list = torch.cat([one_hot, categories], 1).float()
+        else:
+            cov_list = torch.Tensor([])
+
         mu_z, log_std_z = self.encoder(Y, S, M, spatial_context, cov_list)
 
         z_samples = self.reparameterization(mu_z, log_std_z)
@@ -308,11 +322,10 @@ class hmiVAE(pl.LightningModule):
         self,
         test_batch,
         n_other_cat: int = 0,
-        L_iter: int = 10,
+        L_iter: int = 100,
         corr_weights=False,
         recon_weights=np.array([1.0, 1.0, 1.0, 1.0]),
         beta=1.0,
-        categories: Optional[List[float]] = None,
     ):
         """---> Add random one-hot encoding
         Carries out the validation/test step.
@@ -327,25 +340,25 @@ class hmiVAE(pl.LightningModule):
         M = test_batch[2]
         spatial_context = test_batch[3]
         batch_idx = test_batch[-1]
-        # print(batch_idx)
         test_loss = []
-        n_classes = self.n_covariates  # - n_other_cat
+
+        if self.use_covs:
+            categories = test_batch[5]
+            n_classes = self.n_covariates - categories.shape[1]
+        else:
+            categories = torch.Tensor([])
+            n_classes = self.n_covariates
+
         for i in range(L_iter):
-            # print(n_classes)
-            # print(len(batch_idx))
-            # print(np.eye(n_classes)[np.random.choice(n_classes, len(batch_idx))])
-            one_hot = self.random_one_hot(n_classes=n_classes, n_samples=len(batch_idx))
-            # print(one_hot.size())
 
-            if categories is not None:
-                if len(categories) > 0:
-                    categories = torch.Tensor(categories)[batch_idx, :]
-                else:
-                    categories = torch.Tensor(categories)
+            if self.batch_correct:
+                one_hot = self.random_one_hot(
+                    n_classes=n_classes, n_samples=len(batch_idx)
+                )
+
+                cov_list = torch.cat([one_hot, categories], 1).float()
             else:
-                categories = torch.Tensor([])
-
-            cov_list = torch.cat([one_hot, categories], 1).float()
+                cov_list = torch.Tensor([])
 
             mu_z, log_std_z = self.encoder(
                 Y, S, M, spatial_context, cov_list
@@ -400,6 +413,10 @@ class hmiVAE(pl.LightningModule):
 
             loss = self.loss(kl_div, recon_loss, beta=beta)
 
+            # batch = [Y,S,M,spatial_context,one_hot,batch_idx]
+
+            # loss = self.training_step(batch)[0]
+
             test_loss.append(loss)
 
         self.log(
@@ -452,7 +469,7 @@ class hmiVAE(pl.LightningModule):
         data,
         indices: Optional[Sequence[int]] = None,
         give_mean: bool = True,
-        categories: Optional[List[float]] = None,
+        # idx = None,
     ) -> np.ndarray:
         """
         Return the latent representation of each cell.
@@ -461,24 +478,34 @@ class hmiVAE(pl.LightningModule):
         S = data.S
         M = data.M
         C = data.C
-        one_hot = data.samples_onehot
-        if one_hot.shape[1] < self.n_covariates:
-            zeros_pad = torch.Tensor(
-                np.zeros([one_hot.shape[0], self.n_covariates - one_hot.shape[1]])
-            )
-            one_hot = torch.cat([one_hot, zeros_pad], 1)
-        else:
-            one_hot = one_hot
-        batch_idx = data[-1]
-        if categories is not None:
-            if len(categories) > 0:
-                categories = torch.Tensor(categories)[batch_idx, :]
-            else:
-                categories = torch.Tensor(categories)
+        # batch_idx = idx
+        # print(batch_idx)
+        if self.use_covs:
+            categories = data.BKG
+            n_cats = categories.shape[1]
         else:
             categories = torch.Tensor([])
+            n_cats = 0
 
-        cov_list = torch.cat([one_hot, categories], 1).float()
+        if self.batch_correct:
+            one_hot = data.samples_onehot
+            if one_hot.shape[1] < self.n_covariates - n_cats:
+                zeros_pad = torch.Tensor(
+                    np.zeros(
+                        [
+                            one_hot.shape[0],
+                            (self.n_covariates - n_cats) - one_hot.shape[1],
+                        ]
+                    )
+                )
+                one_hot = torch.cat([one_hot, zeros_pad], 1)
+            else:
+                one_hot = one_hot
+
+            cov_list = torch.cat([one_hot, categories], 1).float()
+        else:
+            cov_list = torch.Tensor([])
+
         if give_mean:
             mu_z, _ = self.encoder(Y, S, M, C, cov_list)
 

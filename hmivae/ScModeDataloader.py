@@ -32,15 +32,18 @@ class ScModeDataloader(TensorDataset):
         scalers: set of data scalers
         """
         self.adata = adata
-        Y = adata.X
+        Y = adata.X  # per cell protein mean expression
         S = adata.obsm["correlations"]
         M = adata.obsm["morphology"]
+
+        self.n_cells = Y.shape[0]  # number of cells
 
         if scalers is None:
             self.scalers = {}
             self.scalers["Y"] = StandardScaler().fit(Y)
             self.scalers["S"] = StandardScaler().fit(S)
             self.scalers["M"] = StandardScaler().fit(M)
+
         else:
             self.scalers = scalers
 
@@ -54,6 +57,17 @@ class ScModeDataloader(TensorDataset):
         self.C = self.get_spatial_context()
 
         self.samples_onehot = self.one_hot_encoding()
+
+        if "background_covs" in adata.obsm.keys():  # dealing with background covariates
+            bkg = adata.obsm["background_covs"]
+            if scalers is None:
+                self.scalers["BKG"] = StandardScaler().fit(bkg)
+            else:
+                BKG = self.scalers["BKG"].transform(bkg)
+
+            self.BKG = torch.tensor(BKG).float()
+        else:
+            self.BKG = None
 
     def __len__(self):
         return self.Y.shape[0]
@@ -73,23 +87,54 @@ class ScModeDataloader(TensorDataset):
         return torch.tensor(df.to_numpy()).float()
 
     def get_spatial_context(self):
+        """
+        Multiplies the sparse neighbourhood matrix to protein mean expression (self.Y),
+        protein-protein correlation (self.S) and cell morphology (self.M) matrices.
+        The product-sum is normalized by the number of neighbours each cell has.
+        The resulting matrix, self.C, is the spatial context.
+        """
         adj_mat = sparse_numpy_to_torch(
             self.adata.obsp["connectivities"]
         )  # adjacency matrix
         concatenated_features = torch.cat((self.Y, self.S, self.M), 1)
 
-        C = torch.smm(  # normalize for the number of adjacent cells
+        n_cell_neighbours = self.adata.obsp[
+            "connectivities"
+        ].toarray()  # .sum(1).reshape([self.n_cells,1])
+        n_cell_neighbours[np.where(n_cell_neighbours > 0)] = 1.0
+        n_cell_neighbours = n_cell_neighbours.sum(1).reshape([self.n_cells, 1])
+        n_cell_neighbours[np.where(n_cell_neighbours < 1.0)] = 1.0
+
+        # print('n_cell_neighbours', n_cell_neighbours)
+
+        unnormalized_C = torch.smm(
             adj_mat, concatenated_features
-        ).to_dense()  # spatial context for each cell
+        ).to_dense()  # unnormalized spatial context for each cell
+
+        C = torch.div(
+            unnormalized_C, torch.tensor(n_cell_neighbours)
+        )  # normalize by number of adjacent cells
+        # print('sum C', C.sum())
         return C
 
     def __getitem__(self, idx):
 
-        return (
-            self.Y[idx, :],
-            self.S[idx, :],
-            self.M[idx, :],
-            self.C[idx, :],
-            self.samples_onehot[idx, :],
-            idx,
-        )
+        if self.BKG is None:
+            return (
+                self.Y[idx, :],
+                self.S[idx, :],
+                self.M[idx, :],
+                self.C[idx, :],
+                self.samples_onehot[idx, :],
+                idx,
+            )
+        else:
+            return (
+                self.Y[idx, :],
+                self.S[idx, :],
+                self.M[idx, :],
+                self.C[idx, :],
+                self.samples_onehot[idx, :],
+                self.BKG[idx, :],
+                idx,
+            )

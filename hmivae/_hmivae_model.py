@@ -5,15 +5,17 @@ import anndata as ad
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from _hmivae_module import hmiVAE
 from anndata import AnnData
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from scipy.stats.mstats import winsorize
-from ScModeDataloader import ScModeDataloader
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
+
+# import hmivae
+import hmivae._hmivae_module as module
+import hmivae.ScModeDataloader as ScModeDataloader
 
 # from scvi.data import setup_anndata
 # from scvi.model._utils import _init_library_size
@@ -65,7 +67,10 @@ class hmivaeModel(pl.LightningModule):
         E_sc: int = 32,
         latent_dim: int = 10,
         n_covariates: int = 0,
+        use_covs: bool = False,
         n_hidden: int = 1,
+        cofactor: float = 1.0,
+        batch_correct: bool = True,
         **model_kwargs,
     ):
         # super(hmivaeModel, self).__init__(adata)
@@ -73,14 +78,55 @@ class hmivaeModel(pl.LightningModule):
 
         self.adata = adata
 
-        self.train_batch, self.test_batch, self.n_covariates = self.setup_anndata(
+        if n_covariates > 0:
+
+            if not use_covs:
+                self.use_covs = True
+                print(
+                    "`use_covs` is automatically set to True when `n_covariates` > 0."
+                )
+            else:
+                self.use_covs = use_covs
+
+            self.keys = []
+            for key in adata.obsm.keys():
+                # print(key)
+                if key not in ["correlations", "morphology", "xy"]:
+                    self.keys.append(key)
+
+            # print("n_keys", len(self.keys))
+        else:
+            self.keys = None
+            self.use_covs = use_covs
+
+        (
+            self.train_batch,
+            self.test_batch,
+            self.n_covariates,
+            # self.cov_list,
+        ) = self.setup_anndata(
             adata=self.adata,
             protein_correlations_obsm_key="correlations",
             cell_morphology_obsm_key="morphology",
+            continuous_covariate_keys=self.keys,
+            cofactor=cofactor,
+            image_correct=batch_correct,
         )
 
+        # for batch in self.train_batch:
+        #     print('Y', batch[0])
+        #     print('S', batch[1])
+        #     print('M', batch[2])
+        #     print('C', batch[3])
+        #     print('one-hot', batch[4])
+        #     break
+
+        # print("cov_list", self.cov_list.shape)
+
+        # print('n_covs', self.n_covariates)
+
         # self.summary_stats provides information about anndata dimensions and other tensor info
-        self.module = hmiVAE(
+        self.module = module.hmiVAE(
             input_exp_dim=input_exp_dim,
             input_corr_dim=input_corr_dim,
             input_morph_dim=input_morph_dim,
@@ -92,6 +138,9 @@ class hmivaeModel(pl.LightningModule):
             latent_dim=latent_dim,
             n_covariates=self.n_covariates,
             n_hidden=n_hidden,
+            use_covs=self.use_covs,
+            # cat_list=self.cov_list,
+            batch_correct=batch_correct,
             **model_kwargs,
         )
         self._model_summary_string = (
@@ -114,44 +163,60 @@ class hmivaeModel(pl.LightningModule):
     def train(
         self,
         max_epochs=100,
+        check_val_every_n_epoch=5,
     ):  # misnomer, both train and test are here (either rename or separate)
 
-        early_stopping = EarlyStopping(monitor="test_loss", mode="min", patience=3)
+        early_stopping = EarlyStopping(monitor="test_loss", mode="min", patience=2)
 
         wandb_logger = WandbLogger(project="hmiVAE_init_trial_runs")
 
         trainer = Trainer(
-            max_epochs=max_epochs, callbacks=[early_stopping], logger=wandb_logger
+            max_epochs=max_epochs,
+            check_val_every_n_epoch=check_val_every_n_epoch,
+            callbacks=[early_stopping],
+            logger=wandb_logger,
+            # gradient_clip_val=2.0,
         )
 
-        trainer.fit(
-            self.module, self.train_batch, self.test_batch
-        )  # training, add wandb
-        # trainer.test(dataloaders=self.test_batch)  # test, add wandb
-
-        # return trainer
+        trainer.fit(self.module, self.train_batch, self.test_batch)
 
     @torch.no_grad()
     def get_latent_representation(
         self,
         protein_correlations_obsm_key: str,
         cell_morphology_obsm_key: str,
-        is_trained_model: Optional[bool] = True,
+        continuous_covariate_keys: Optional[List[str]] = None,  # default is self.keys
+        cofactor: float = 1.0,
+        is_trained_model: Optional[bool] = False,
+        batch_correct: Optional[bool] = True,
     ) -> AnnData:
         """
         Gives the latent representation of each cell.
         """
         if is_trained_model:
-            adata_train, adata_test, data_train, data_test = self.setup_anndata(
+            (
+                adata_train,
+                adata_test,
+                data_train,
+                data_test,
+                # cat_list,
+                # train_idx,
+                # test_idx,
+            ) = self.setup_anndata(
                 self.adata,
                 protein_correlations_obsm_key,
                 cell_morphology_obsm_key,
+                continuous_covariate_keys=self.keys,
+                cofactor=cofactor,
                 is_trained_model=is_trained_model,
+                image_correct=batch_correct,
             )
-            # print(data_train.samples_onehot.size())
-            adata_train.obsm["VAE"] = self.module.inference(data_train)
-            adata_test.obsm["VAE"] = self.module.inference(data_test)
-            # test_mu_z = self.module.inference(data_test) #leaving it out for now, how to incorporate one-hot encoding here?
+
+            adata_train.obsm["VAE"] = self.module.inference(
+                data_train
+            )  # idx=train_idx)
+            adata_test.obsm["VAE"] = self.module.inference(data_test)  # idx=test_idx)
+
             return ad.concat([adata_train, adata_test], uns_merge="first")
         else:
             raise Exception(
@@ -168,12 +233,15 @@ class hmivaeModel(pl.LightningModule):
         # cell_spatial_context_obsm_key: str,
         protein_correlations_names_uns_key: Optional[str] = None,
         cell_morphology_names_uns_key: Optional[str] = None,
+        image_correct: bool = True,
         batch_size: Optional[int] = 128,
         batch_key: Optional[str] = None,
         labels_key: Optional[str] = None,
         layer: Optional[str] = None,
         categorical_covariate_keys: Optional[List[str]] = None,
-        continuous_covariate_keys: Optional[List[str]] = None,
+        continuous_covariate_keys: Optional[
+            List[str]
+        ] = None,  # obsm keys for other categories
         cofactor: float = 1.0,
         train_prop: Optional[float] = 0.75,
         apply_winsorize: Optional[bool] = True,
@@ -199,13 +267,27 @@ class hmivaeModel(pl.LightningModule):
         -------
         %(returns)s
         """
-        # N_TOTAL_CELLS = adata.shape[0]
         N_PROTEINS = adata.shape[1]
-        # N_CORRELATIONS = len(adata.uns["names_correlations"])
         N_MORPHOLOGY = len(adata.uns["names_morphology"])
 
-        # N_TOTAL_FEATURES = N_PROTEINS + N_CORRELATIONS + N_MORPHOLOGY
-        # if cofactor is not None:
+        if continuous_covariate_keys is not None:
+            cat_list = []
+            for cat_key in continuous_covariate_keys:
+                # print(cat_key)
+                # print(f"{cat_key} shape:", adata.obsm[cat_key].shape)
+                category = adata.obsm[cat_key]
+                cat_list.append(category)
+            cat_list = np.arcsinh(np.concatenate(cat_list, 1) / cofactor)
+            n_cats = cat_list.shape[1]
+            if apply_winsorize:
+                for i in range(cat_list.shape[1]):
+                    cat_list[:, i] = winsorize(cat_list[:, i], limits=[0, 0.01])
+
+            adata.obsm["background_covs"] = cat_list
+        else:
+            # cat_list = np.array([])
+            n_cats = 0
+
         adata.X = np.arcsinh(adata.X / cofactor)
 
         if apply_winsorize:
@@ -225,23 +307,46 @@ class hmivaeModel(pl.LightningModule):
             adata.obs["Sample_name"].unique().tolist()
         )  # samples in the adata
 
-        # train_size = int(np.floor(len(samples_list) * train_prop))
-        # test_size = len(samples_list) - train_size
-
         samples_train, samples_test = train_test_split(
             samples_list, train_size=train_prop, random_state=random_seed
         )
-
+        # samples_df = adata.obs.reset_index()
         adata_train = adata.copy()[adata.obs["Sample_name"].isin(samples_train), :]
+        # train_idx = samples_df.loc[samples_df["Sample_name"].isin(samples_train),:].index
         adata_test = adata.copy()[adata.obs["Sample_name"].isin(samples_test), :]
+        # test_idx = samples_df.loc[samples_df["Sample_name"].isin(samples_test),:].index
 
-        data_train = ScModeDataloader(adata_train)
-        data_test = ScModeDataloader(adata_test, data_train.scalers)
+        data_train = ScModeDataloader.ScModeDataloader(adata_train)
+        data_test = ScModeDataloader.ScModeDataloader(adata_test, data_train.scalers)
 
         loader_train = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         loader_test = DataLoader(data_test, batch_size=batch_size)  # shuffle=True)
 
-        if is_trained_model:
-            return adata_train, adata_test, data_train, data_test
+        if image_correct:
+            n_samples = len(samples_train)
+            # print("n_samples", n_samples)
+            # print("cat_list", cat_list.shape)
         else:
-            return loader_train, loader_test, len(samples_train)
+            n_samples = 0
+
+        if is_trained_model:
+            # if continuous_covariate_keys is not None:
+            return (
+                adata_train,
+                adata_test,
+                data_train,
+                data_test,
+            )  # cat_list, train_idx, test_idx
+            # else:
+            #     cat_list = None
+            #     return adata_train, adata_test, data_train, data_test, cat_list, train_idx, test_idx
+
+        else:
+
+            return (
+                loader_train,
+                loader_test,
+                n_samples + n_cats,
+            )  # cat_list
+            # else:
+            #     return loader_train, loader_test, n_samples, cat_list

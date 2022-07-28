@@ -30,7 +30,6 @@ class hmiVAE(pl.LightningModule):
         E_sc: int = 32,
         latent_dim: int = 10,
         n_covariates: int = 0,
-        # cat_list: Optional[List[float]] = None,
         use_covs: bool = False,
         n_hidden: int = 1,
         batch_correct: bool = True,
@@ -38,8 +37,6 @@ class hmiVAE(pl.LightningModule):
         super().__init__()
         # hidden_dim = E_me + E_cr + E_mr + E_sc
         self.n_covariates = n_covariates
-
-        # self.cat_list = cat_list
 
         self.batch_correct = batch_correct
 
@@ -241,7 +238,6 @@ class hmiVAE(pl.LightningModule):
         S = train_batch[1]
         M = train_batch[2]
         spatial_context = train_batch[3]
-        # batch_idx = train_batch[-1]
 
         if self.use_covs:
             categories = train_batch[5]
@@ -360,9 +356,7 @@ class hmiVAE(pl.LightningModule):
             else:
                 cov_list = torch.Tensor([])
 
-            mu_z, log_std_z = self.encoder(
-                Y, S, M, spatial_context, cov_list
-            )  # valid step
+            mu_z, log_std_z = self.encoder(Y, S, M, spatial_context, cov_list)
 
             z_samples = self.reparameterization(mu_z, log_std_z)
 
@@ -412,10 +406,6 @@ class hmiVAE(pl.LightningModule):
             )
 
             loss = self.loss(kl_div, recon_loss, beta=beta)
-
-            # batch = [Y,S,M,spatial_context,one_hot,batch_idx]
-
-            # loss = self.training_step(batch)[0]
 
             test_loss.append(loss)
 
@@ -478,8 +468,6 @@ class hmiVAE(pl.LightningModule):
         S = data.S
         M = data.M
         C = data.C
-        # batch_idx = idx
-        # print(batch_idx)
         if self.use_covs:
             categories = data.BKG
             n_cats = categories.shape[1]
@@ -522,5 +510,5 @@ class hmiVAE(pl.LightningModule):
         Generates a random one hot encoded matrix.
         From:  https://stackoverflow.com/questions/45093615/random-one-hot-matrix-in-numpy
         """
-        # x = np.eye(n_classes)
+
         return torch.Tensor(np.eye(n_classes)[np.random.choice(n_classes, n_samples)])

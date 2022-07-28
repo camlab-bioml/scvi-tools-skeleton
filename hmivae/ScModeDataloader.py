@@ -22,6 +22,17 @@ def sparse_numpy_to_torch(adj_mat):
     return torch.sparse_coo_tensor(i, v, shape)
 
 
+def get_n_cell_neighbours(adj_mat):
+    """Get the sum of a sparse matrix
+    Need to first replace all non-zero elements with 1
+    Then add them up to get the number of neighbours
+    """
+    adj_mat[adj_mat.nonzero()] = 1.0
+    n_neighbours_sparse = adj_mat.sum(1)
+
+    return np.asarray(n_neighbours_sparse)
+
+
 class ScModeDataloader(TensorDataset):
     def __init__(self, adata, scalers=None):
         """
@@ -59,11 +70,12 @@ class ScModeDataloader(TensorDataset):
         self.samples_onehot = self.one_hot_encoding()
 
         if "background_covs" in adata.obsm.keys():  # dealing with background covariates
-            bkg = adata.obsm["background_covs"]
+            BKG = adata.obsm["background_covs"]
             if scalers is None:
-                self.scalers["BKG"] = StandardScaler().fit(bkg)
+                self.scalers["BKG"] = StandardScaler().fit(BKG)
+                BKG = self.scalers["BKG"].transform(BKG)
             else:
-                BKG = self.scalers["BKG"].transform(bkg)
+                BKG = self.scalers["BKG"].transform(BKG)
 
             self.BKG = torch.tensor(BKG).float()
         else:
@@ -98,14 +110,9 @@ class ScModeDataloader(TensorDataset):
         )  # adjacency matrix
         concatenated_features = torch.cat((self.Y, self.S, self.M), 1)
 
-        n_cell_neighbours = self.adata.obsp[
-            "connectivities"
-        ].toarray()  # .sum(1).reshape([self.n_cells,1])
-        n_cell_neighbours[np.where(n_cell_neighbours > 0)] = 1.0
-        n_cell_neighbours = n_cell_neighbours.sum(1).reshape([self.n_cells, 1])
-        n_cell_neighbours[np.where(n_cell_neighbours < 1.0)] = 1.0
-
-        # print('n_cell_neighbours', n_cell_neighbours)
+        n_cell_neighbours = get_n_cell_neighbours(
+            self.adata.copy().obsp["connectivities"]
+        )
 
         unnormalized_C = torch.smm(
             adj_mat, concatenated_features
@@ -114,7 +121,6 @@ class ScModeDataloader(TensorDataset):
         C = torch.div(
             unnormalized_C, torch.tensor(n_cell_neighbours)
         )  # normalize by number of adjacent cells
-        # print('sum C', C.sum())
         return C
 
     def __getitem__(self, idx):

@@ -1,4 +1,4 @@
-from typing import Optional, Sequence  # List
+from typing import Literal, Optional, Sequence, Union
 
 import numpy as np
 import pytorch_lightning as pl
@@ -29,18 +29,29 @@ class hmiVAE(pl.LightningModule):
         E_mr: int = 32,
         E_sc: int = 32,
         latent_dim: int = 10,
+        E_cov: int = 10,
         n_covariates: int = 0,
+        leave_out_view: Optional[
+            Union[None, Literal["expression", "correlation", "morphology", "spatial"]]
+        ] = None,
         use_covs: bool = False,
         n_hidden: int = 1,
         batch_correct: bool = True,
+        n_steps_kl_warmup: Union[int, None] = None,
+        n_epochs_kl_warmup: Union[int, None] = 100,
     ):
         super().__init__()
         # hidden_dim = E_me + E_cr + E_mr + E_sc
+
+        self.n_steps_kl_warmup = n_steps_kl_warmup
+        self.n_epochs_kl_warmup = n_epochs_kl_warmup
         self.n_covariates = n_covariates
 
         self.batch_correct = batch_correct
 
         self.use_covs = use_covs
+
+        self.leave_out_view = leave_out_view
 
         self.encoder = EncoderHMIVAE(
             input_exp_dim,
@@ -52,7 +63,9 @@ class hmiVAE(pl.LightningModule):
             E_mr,
             E_sc,
             latent_dim,
+            E_cov,
             n_covariates=n_covariates,
+            leave_out_view=leave_out_view,
         )
 
         self.decoder = DecoderHMIVAE(
@@ -65,7 +78,9 @@ class hmiVAE(pl.LightningModule):
             input_corr_dim,
             input_morph_dim,
             input_spcont_dim,
+            E_cov,
             n_covariates=n_covariates,
+            leave_out_view=leave_out_view,
         )
 
         self.save_hyperparameters(ignore=["adata", "cat_list"])
@@ -96,6 +111,36 @@ class hmiVAE(pl.LightningModule):
         kl = kl.sum(-1)
 
         return kl
+
+    def compute_kl_weight(
+        self,
+        epoch: int,
+        step: Optional[int],
+        n_epochs_kl_warmup: Optional[int],
+        n_steps_kl_warmup: Optional[int],
+        max_kl_weight: float = 1.0,
+        min_kl_weight: float = 0.0,
+    ) -> float:
+        """
+        Compute the weight for the KL-Div term in loss.
+        Taken from scVI:
+        https://github.com/scverse/scvi-tools/blob/2c22bda9bcfb5a89d62c96c4ad39d8a1e297eb08/scvi/train/_trainingplans.py#L31
+        """
+        slope = max_kl_weight - min_kl_weight
+
+        if min_kl_weight > max_kl_weight:
+            raise ValueError(
+                f"min_kl_weight={min_kl_weight} is larger than max_kl_weight={max_kl_weight}"
+            )
+
+        if n_epochs_kl_warmup:
+            if epoch < n_epochs_kl_warmup:
+                return slope * (epoch / n_epochs_kl_warmup) + min_kl_weight
+        elif n_steps_kl_warmup:
+            if step < n_steps_kl_warmup:
+                return slope * (step / n_steps_kl_warmup) + min_kl_weight
+
+        return max_kl_weight
 
     def em_recon_loss(
         self,
@@ -223,8 +268,6 @@ class hmiVAE(pl.LightningModule):
         self,
         train_batch,
         corr_weights=False,
-        recon_weights=np.array([1.0, 1.0, 1.0, 1.0]),
-        beta=1.0,
     ):
         """
         Carries out the training step.
@@ -242,14 +285,14 @@ class hmiVAE(pl.LightningModule):
         if self.use_covs:
             categories = train_batch[5]
         else:
-            categories = torch.Tensor([])
+            categories = torch.Tensor([]).type_as(Y)
 
         if self.batch_correct:
             one_hot = train_batch[4]
 
-            cov_list = torch.cat([one_hot, categories], 1).float()
+            cov_list = torch.cat([one_hot, categories], 1).float().type_as(Y)
         else:
-            cov_list = torch.Tensor([])
+            cov_list = torch.Tensor([]).type_as(Y)
 
         mu_z, log_std_z = self.encoder(Y, S, M, spatial_context, cov_list)
 
@@ -293,6 +336,25 @@ class hmiVAE(pl.LightningModule):
             # weights,
         )
 
+        beta = self.compute_kl_weight(
+            self.current_epoch,
+            self.global_step,
+            self.n_epochs_kl_warmup,
+            self.n_steps_kl_warmup,
+        )
+
+        if self.leave_out_view is not None:
+            if self.leave_out_view == "expression":
+                recon_weights = np.array([0.0, 1.0, 1.0, 1.0])
+            if self.leave_out_view == "correlation":
+                recon_weights = np.array([1.0, 0.0, 1.0, 1.0])
+            if self.leave_out_view == "morphology":
+                recon_weights = np.array([1.0, 1.0, 0.0, 1.0])
+            if self.leave_out_view == "spatial":
+                recon_weights = np.array([1.0, 1.0, 1.0, 0.0])
+        else:
+            recon_weights = np.array([1.0, 1.0, 1.0, 1.0])
+
         recon_loss = (
             recon_weights[0] * recon_lik_me
             + recon_weights[1] * recon_lik_corr
@@ -303,6 +365,45 @@ class hmiVAE(pl.LightningModule):
         loss = self.loss(kl_div, recon_loss, beta=beta)
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("beta", beta, on_step=False, on_epoch=True, prog_bar=False)
+        self.log(
+            "kl_div", kl_div.mean().item(), on_step=True, on_epoch=True, prog_bar=False
+        )
+        self.log(
+            "recon_loss",
+            recon_loss.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_me",
+            recon_lik_me.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_corr",
+            recon_lik_corr.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_mor",
+            recon_lik_mor.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_sc",
+            recon_lik_sc.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
 
         return {
             "loss": loss,
@@ -318,10 +419,8 @@ class hmiVAE(pl.LightningModule):
         self,
         test_batch,
         n_other_cat: int = 0,
-        L_iter: int = 100,
+        L_iter: int = 300,
         corr_weights=False,
-        recon_weights=np.array([1.0, 1.0, 1.0, 1.0]),
-        beta=1.0,
     ):
         """---> Add random one-hot encoding
         Carries out the validation/test step.
@@ -336,7 +435,7 @@ class hmiVAE(pl.LightningModule):
         M = test_batch[2]
         spatial_context = test_batch[3]
         batch_idx = test_batch[-1]
-        test_loss = []
+        # test_loss = []
 
         if self.use_covs:
             categories = test_batch[5]
@@ -345,16 +444,27 @@ class hmiVAE(pl.LightningModule):
             categories = torch.Tensor([])
             n_classes = self.n_covariates
 
-        for i in range(L_iter):
+        test_loss = torch.empty(size=[len(batch_idx), n_classes])
+
+        # for i in range(L_iter):
+        for i in range(n_classes):
 
             if self.batch_correct:
-                one_hot = self.random_one_hot(
-                    n_classes=n_classes, n_samples=len(batch_idx)
-                )
+                # one_hot = self.random_one_hot(
+                #     n_classes=n_classes, n_samples=len(batch_idx)
+                # ).type_as(Y)
 
-                cov_list = torch.cat([one_hot, categories], 1).float()
+                one_hot_zeros = torch.zeros(size=[1, n_classes])
+
+                one_hot_zeros[0, i] = 1.0
+
+                one_hot = one_hot_zeros.repeat((len(batch_idx), 1)).type_as(Y)
+
+                cov_list = torch.cat([one_hot, categories], 1).float().type_as(Y)
+            elif self.use_covs:
+                cov_list = categories
             else:
-                cov_list = torch.Tensor([])
+                cov_list = torch.Tensor([]).type_as(Y)
 
             mu_z, log_std_z = self.encoder(Y, S, M, spatial_context, cov_list)
 
@@ -398,6 +508,25 @@ class hmiVAE(pl.LightningModule):
                 # weights,
             )
 
+            beta = self.compute_kl_weight(
+                self.current_epoch,
+                self.global_step,
+                self.n_epochs_kl_warmup,
+                self.n_steps_kl_warmup,
+            )
+
+            if self.leave_out_view is not None:
+                if self.leave_out_view == "expression":
+                    recon_weights = np.array([0.0, 1.0, 1.0, 1.0])
+                if self.leave_out_view == "correlation":
+                    recon_weights = np.array([1.0, 0.0, 1.0, 1.0])
+                if self.leave_out_view == "morphology":
+                    recon_weights = np.array([1.0, 1.0, 0.0, 1.0])
+                if self.leave_out_view == "spatial":
+                    recon_weights = np.array([1.0, 1.0, 1.0, 0.0])
+            else:
+                recon_weights = np.array([1.0, 1.0, 1.0, 1.0])
+
             recon_loss = (
                 recon_weights[0] * recon_lik_me
                 + recon_weights[1] * recon_lik_corr
@@ -407,18 +536,61 @@ class hmiVAE(pl.LightningModule):
 
             loss = self.loss(kl_div, recon_loss, beta=beta)
 
-            test_loss.append(loss)
+            test_loss[:, i] = loss
 
         self.log(
             "test_loss",
-            sum(test_loss) / L_iter,
+            # sum(test_loss) / L_iter,
+            test_loss.mean(1).sum(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
         )  # log the average test loss over all the iterations
+        self.log(
+            "kl_div_test",
+            kl_div.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_loss_test",
+            recon_loss.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_me_test",
+            recon_lik_me.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_corr_test",
+            recon_lik_corr.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_mor_test",
+            recon_lik_mor.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
+        self.log(
+            "recon_lik_sc_test",
+            recon_lik_sc.mean().item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=False,
+        )
 
         return {
-            "loss": sum(test_loss) / L_iter,
+            "loss": test_loss.mean(1).sum(),
             "kl_div": kl_div.mean().item(),
             "recon_loss": recon_loss.mean().item(),
             "recon_lik_me": recon_lik_me.mean().item(),
@@ -429,7 +601,8 @@ class hmiVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         """Optimizer"""
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        parameters = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        optimizer = torch.optim.Adam(parameters, lr=1e-3)
         return optimizer
 
     @torch.no_grad()
@@ -470,25 +643,28 @@ class hmiVAE(pl.LightningModule):
         C = data.C
         if self.use_covs:
             categories = data.BKG
-            n_cats = categories.shape[1]
+            n_classes = self.n_covariates - categories.shape[1]
         else:
-            categories = torch.Tensor([])
-            n_cats = 0
+            categories = torch.Tensor([]).type_as(Y)
+            n_classes = self.n_covariates
 
         if self.batch_correct:
-            one_hot = data.samples_onehot
-            if one_hot.shape[1] < self.n_covariates - n_cats:
-                zeros_pad = torch.Tensor(
-                    np.zeros(
-                        [
-                            one_hot.shape[0],
-                            (self.n_covariates - n_cats) - one_hot.shape[1],
-                        ]
-                    )
-                )
-                one_hot = torch.cat([one_hot, zeros_pad], 1)
-            else:
-                one_hot = one_hot
+            one_hot = self.random_one_hot(
+                n_classes=n_classes, n_samples=Y.shape[0]
+            ).type_as(Y)
+            # one_hot = data.samples_onehot
+            # if one_hot.shape[1] < self.n_covariates - n_cats:
+            #     zeros_pad = torch.Tensor(
+            #         np.zeros(
+            #             [
+            #                 one_hot.shape[0],
+            #                 (self.n_covariates - n_cats) - one_hot.shape[1],
+            #             ]
+            #         )
+            #     )
+            #     one_hot = torch.cat([one_hot, zeros_pad], 1)
+            # else:
+            #     one_hot = one_hot
 
             cov_list = torch.cat([one_hot, categories], 1).float()
         else:

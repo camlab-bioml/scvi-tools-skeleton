@@ -1,12 +1,13 @@
 import logging
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import anndata as ad
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from anndata import AnnData
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks.progress import RichProgressBar
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from scipy.stats.mstats import winsorize
@@ -63,19 +64,25 @@ class hmivaeModel(pl.LightningModule):
         n_hidden: int = 1,
         cofactor: float = 1.0,
         batch_correct: bool = True,
+        leave_out_view: Optional[
+            Literal["expression", "correlation", "morphology", "spatial"]
+        ] = None,
+        output_dir: str = ".",
         **model_kwargs,
     ):
         # super(hmivaeModel, self).__init__(adata)
         super().__init__()
 
+        self.output_dir = output_dir
         self.adata = adata
         self.use_covs = use_covs
+        self.leave_out_view = leave_out_view
 
         if self.use_covs:
             self.keys = []
             for key in adata.obsm.keys():
 
-                if key not in ["correlations", "morphology", "xy"]:
+                if key not in ["correlations", "morphology", "spatial"]:
                     self.keys.append(key)
 
         else:
@@ -85,6 +92,7 @@ class hmivaeModel(pl.LightningModule):
             self.train_batch,
             self.test_batch,
             self.n_covariates,
+            self.features_config,
             # self.cov_list,
         ) = self.setup_anndata(
             adata=self.adata,
@@ -133,19 +141,61 @@ class hmivaeModel(pl.LightningModule):
     def train(
         self,
         max_epochs=100,
-        check_val_every_n_epoch=5,
+        check_val_every_n_epoch=1,
     ):  # misnomer, both train and test are here (either rename or separate)
 
         early_stopping = EarlyStopping(monitor="test_loss", mode="min", patience=2)
 
-        wandb_logger = WandbLogger(project="hmiVAE_init_trial_runs")
+        cb_chkpt = ModelCheckpoint(
+            dirpath=f"{self.output_dir}",
+            monitor="test_loss",
+            mode="min",
+            save_top_k=1,
+            filename="{epoch}_{step}_{test_loss:.3f}",
+        )
+
+        cb_progress = RichProgressBar()
+
+        if self.leave_out_view is None:
+
+            wandb_logger = WandbLogger(
+                project="hmiVAE_init_trial_runs",
+                config={
+                    "Expression min/max": (self.adata.X.min(), self.adata.X.max()),
+                    "Correlation min/max": (
+                        self.adata.obsm["correlations"].min(),
+                        self.adata.obsm["correlations"].max(),
+                    ),
+                    "Morphology min/max": (
+                        self.adata.obsm["morphology"].min(),
+                        self.adata.obsm["morphology"].max(),
+                    ),
+                },
+            )
+        else:
+            wandb_logger = WandbLogger(
+                project="hmivae_ablation",
+                config={
+                    "Expression min/max": (self.adata.X.min(), self.adata.X.max()),
+                    "Correlation min/max": (
+                        self.adata.obsm["correlations"].min(),
+                        self.adata.obsm["correlations"].max(),
+                    ),
+                    "Morphology min/max": (
+                        self.adata.obsm["morphology"].min(),
+                        self.adata.obsm["morphology"].max(),
+                    ),
+                },
+            )
 
         trainer = Trainer(
             max_epochs=max_epochs,
             check_val_every_n_epoch=check_val_every_n_epoch,
-            callbacks=[early_stopping],
+            callbacks=[early_stopping, cb_progress, cb_chkpt],
             logger=wandb_logger,
-            # gradient_clip_val=2.0,
+            gradient_clip_val=2.0,
+            accelerator="auto",
+            devices="auto",
         )
 
         trainer.fit(self.module, self.train_batch, self.test_batch)
@@ -193,7 +243,7 @@ class hmivaeModel(pl.LightningModule):
         protein_correlations_names_uns_key: Optional[str] = None,
         cell_morphology_names_uns_key: Optional[str] = None,
         image_correct: bool = True,
-        batch_size: Optional[int] = 128,
+        batch_size: Optional[int] = 32,
         batch_key: Optional[str] = None,
         labels_key: Optional[str] = None,
         layer: Optional[str] = None,
@@ -274,6 +324,17 @@ class hmivaeModel(pl.LightningModule):
         data_train = ScModeDataloader.ScModeDataloader(adata_train)
         data_test = ScModeDataloader.ScModeDataloader(adata_test, data_train.scalers)
 
+        features_ranges = {
+            "Train expression min/max": (data_train.Y.min(), data_train.Y.max()),
+            "Train correlation min/max": (data_train.S.min(), data_train.S.max()),
+            "Train morphology min/max": (data_train.M.min(), data_train.M.max()),
+            "Train spatial context min/max": (data_train.C.min(), data_train.C.max()),
+            "Test expression min/max": (data_test.Y.min(), data_test.Y.max()),
+            "Test correlation min/max": (data_test.S.min(), data_test.S.max()),
+            "Test morphology min/max": (data_test.M.min(), data_test.M.max()),
+            "Test spatial context min/max": (data_test.C.min(), data_test.C.max()),
+        }
+
         loader_train = DataLoader(data_train, batch_size=batch_size, shuffle=True)
         loader_test = DataLoader(data_test, batch_size=batch_size)
 
@@ -297,4 +358,5 @@ class hmivaeModel(pl.LightningModule):
                 loader_train,
                 loader_test,
                 n_samples + n_cats,
+                features_ranges,
             )

@@ -35,6 +35,7 @@ class hmiVAE(pl.LightningModule):
             Union[None, Literal["expression", "correlation", "morphology", "spatial"]]
         ] = None,
         use_covs: bool = False,
+        use_weights: bool = True,
         n_hidden: int = 1,
         batch_correct: bool = True,
         n_steps_kl_warmup: Union[int, None] = None,
@@ -50,6 +51,8 @@ class hmiVAE(pl.LightningModule):
         self.batch_correct = batch_correct
 
         self.use_covs = use_covs
+
+        self.use_weights = use_weights
 
         self.leave_out_view = leave_out_view
 
@@ -156,7 +159,7 @@ class hmiVAE(pl.LightningModule):
         s,
         m,
         c,
-        # weights=None,
+        weights: Optional[Union[None, torch.tensor]] = None,
     ):
         """Takes in the parameters output from the decoder,
         and the original input x, and gives the reconstruction
@@ -188,16 +191,16 @@ class hmiVAE(pl.LightningModule):
         )
 
         log_p_xz_exp = p_rec_exp.log_prob(y)
-        log_p_xz_corr = p_rec_corr.log_prob(s)
+        # log_p_xz_corr = p_rec_corr.log_prob(s)
         log_p_xz_morph = p_rec_morph.log_prob(m)
         log_p_xz_spcont = p_rec_spcont.log_prob(c)  # already dense matrix
 
-        # if weights is None:
-        #     log_p_xz_corr = p_rec_corr.log_prob(s)
-        # else:
-        #     log_p_xz_corr = torch.mul(
-        #         weights, p_rec_corr.log_prob(s)
-        #     )  # does element-wise multiplication
+        if weights is None:
+            log_p_xz_corr = p_rec_corr.log_prob(s)
+        else:
+            log_p_xz_corr = torch.mul(
+                weights, p_rec_corr.log_prob(s)
+            )  # does element-wise multiplication
 
         log_p_xz_exp = log_p_xz_exp.sum(-1)
         log_p_xz_corr = log_p_xz_corr.sum(-1)
@@ -228,7 +231,7 @@ class hmiVAE(pl.LightningModule):
         s,
         m,
         c,
-        # weights=None,
+        weights: Optional[Union[None, torch.tensor]] = None,
     ):
         kl_div = self.KL_div(enc_x_mu, enc_x_logstd, z)
 
@@ -250,7 +253,7 @@ class hmiVAE(pl.LightningModule):
             s,
             m,
             c,
-            # weights,
+            weights,
         )
         return (
             kl_div,
@@ -267,7 +270,6 @@ class hmiVAE(pl.LightningModule):
     def training_step(
         self,
         train_batch,
-        corr_weights=False,
     ):
         """
         Carries out the training step.
@@ -282,8 +284,13 @@ class hmiVAE(pl.LightningModule):
         M = train_batch[2]
         spatial_context = train_batch[3]
 
+        if self.use_weights:
+            weights = train_batch[5]
+        else:
+            weights = None
+
         if self.use_covs:
-            categories = train_batch[5]
+            categories = train_batch[6]
         else:
             categories = torch.Tensor([]).type_as(Y)
 
@@ -308,7 +315,6 @@ class hmiVAE(pl.LightningModule):
             log_std_x_morph_hat,
             mu_x_spcont_hat,
             log_std_x_spcont_hat,
-            # weights,
         ) = self.decoder(z_samples, cov_list)
 
         (
@@ -333,7 +339,7 @@ class hmiVAE(pl.LightningModule):
             S,
             M,
             spatial_context,
-            # weights,
+            weights,
         )
 
         beta = self.compute_kl_weight(
@@ -420,7 +426,6 @@ class hmiVAE(pl.LightningModule):
         test_batch,
         n_other_cat: int = 0,
         L_iter: int = 300,
-        corr_weights=False,
     ):
         """---> Add random one-hot encoding
         Carries out the validation/test step.
@@ -435,10 +440,14 @@ class hmiVAE(pl.LightningModule):
         M = test_batch[2]
         spatial_context = test_batch[3]
         batch_idx = test_batch[-1]
-        # test_loss = []
+
+        if self.use_weights:
+            weights = test_batch[5]
+        else:
+            weights = None
 
         if self.use_covs:
-            categories = test_batch[5]
+            categories = test_batch[6]
             n_classes = self.n_covariates - categories.shape[1]
         else:
             categories = torch.Tensor([])
@@ -480,7 +489,6 @@ class hmiVAE(pl.LightningModule):
                 log_std_x_morph_hat,
                 mu_x_spcont_hat,
                 log_std_x_spcont_hat,
-                # weights,
             ) = self.decoder(z_samples, cov_list)
 
             (
@@ -505,7 +513,7 @@ class hmiVAE(pl.LightningModule):
                 S,
                 M,
                 spatial_context,
-                # weights,
+                weights,
             )
 
             beta = self.compute_kl_weight(
@@ -541,7 +549,7 @@ class hmiVAE(pl.LightningModule):
         self.log(
             "test_loss",
             # sum(test_loss) / L_iter,
-            test_loss.mean(1).sum(),
+            test_loss.mean(1).mean(),  # log the mean across cells
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -590,7 +598,7 @@ class hmiVAE(pl.LightningModule):
         )
 
         return {
-            "loss": test_loss.mean(1).sum(),
+            "loss": test_loss.mean(1).mean(),  # get the mean across cells
             "kl_div": kl_div.mean().item(),
             "recon_loss": recon_loss.mean().item(),
             "recon_lik_me": recon_lik_me.mean().item(),

@@ -46,6 +46,7 @@ class ScModeDataloader(TensorDataset):
         Y = adata.X  # per cell protein mean expression
         S = adata.obsm["correlations"]
         M = adata.obsm["morphology"]
+        weights = adata.obsm["weights"]
 
         self.n_cells = Y.shape[0]  # number of cells
 
@@ -66,6 +67,9 @@ class ScModeDataloader(TensorDataset):
         self.S = torch.tensor(S).float()
         self.M = torch.tensor(M).float()
         self.C = self.get_spatial_context()
+        self.weights = torch.tensor(
+            weights
+        ).float()  # these don't need to be scaled, not a data input
 
         self.samples_onehot = self.one_hot_encoding()
 
@@ -132,6 +136,7 @@ class ScModeDataloader(TensorDataset):
                 self.M[idx, :],
                 self.C[idx, :],
                 self.samples_onehot[idx, :],
+                self.weights[idx, :],
                 idx,
             )
         else:
@@ -141,6 +146,7 @@ class ScModeDataloader(TensorDataset):
                 self.M[idx, :],
                 self.C[idx, :],
                 self.samples_onehot[idx, :],
+                self.weights[idx, :],
                 self.BKG[idx, :],
                 idx,
             )

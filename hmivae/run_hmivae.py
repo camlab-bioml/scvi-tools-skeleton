@@ -426,7 +426,7 @@ sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="VAE", key_added="vae"
 )  # 100 nearest neighbours, will be used in downstream tests -- keep with PG
 
-sc.pp.neighbors(adata, n_neighbors=100, use_rep="VAE", key_added="vae_100")
+# sc.pp.neighbors(adata, n_neighbors=100, use_rep="VAE", key_added="vae_100")
 
 sc.tl.leiden(adata, neighbors_key="vae")
 

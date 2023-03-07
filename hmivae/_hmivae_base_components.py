@@ -16,7 +16,10 @@ class EncoderHMIVAE(nn.Module):
     E_mr: Dimension for the encoded morphology input
     E_sc: Dimension for the encoded spatial context input
     latent_dim: Dimension of the encoded output
+    E_cov: Dimension for the encoded covariates input
+    n_covariates: Number of covariates
     n_hidden: Number of hidden layers, default=1
+    leave_out_view: For ablation testing. View to leave out, default=None
     """
 
     def __init__(
@@ -152,7 +155,11 @@ class DecoderHMIVAE(nn.Module):
     input_corr_dim: Dimension for the decoded correlations output
     input_morph_dim: Dimension for the decoded morphology input
     input_spcont_dim: Dimension for the decoded spatial context input
+    E_cov: Dimension for the encoded covariates input
+    n_covariates: Number of covariates
+    linear_decoder: True or False for using a linear decoder
     n_hidden: Number of hidden layers, default=1
+    leave_out_view: For ablation testing. View to leave out during training, default=None
     """
 
     def __init__(
@@ -168,6 +175,7 @@ class DecoderHMIVAE(nn.Module):
         input_spcont_dim: int,
         E_cov: Optional[int] = 10,
         n_covariates: Optional[int] = 0,
+        linear_decoder: Optional[bool] = False,
         n_hidden: Optional[int] = 1,
         leave_out_view: Optional[
             Union[None, Literal["expression", "correlation", "morphology", "spatial"]]
@@ -182,6 +190,7 @@ class DecoderHMIVAE(nn.Module):
         self.E_mr = E_mr
         self.E_sc = E_sc
         self.input = nn.Linear(latent_dim, hidden_dim)
+        self.linear_decoder = linear_decoder
         self.linear = nn.ModuleList(
             [nn.Linear(hidden_dim, hidden_dim) for i in range(n_hidden)]
         )
@@ -209,23 +218,20 @@ class DecoderHMIVAE(nn.Module):
         z_s = torch.cat(
             [z, cov_list], 1
         )  # takes in one-hot as input, doesn't need to be symmetric with the encoder, doesn't output it
-        out = F.elu(self.input(z_s))
-        for net in self.linear:
-            out = F.elu(net(out))
 
-        # if self.leave_out_view is None:
+        if (
+            self.linear_decoder
+        ):  # linear decoder, no activation functions and single linear layer
+            out = self.input(z_s)
 
-        h2_mean = F.elu(self.exp_hidden(out[:, 0 : self.E_me]))
-        h2_correlations = F.elu(
-            self.corr_hidden(out[:, self.E_me : self.E_me + self.E_cr])
-        )
-        h2_morphology = F.elu(
-            self.morph_hidden(
+            h2_mean = self.exp_hidden(out[:, 0 : self.E_me])
+            h2_correlations = self.corr_hidden(
+                out[:, self.E_me : self.E_me + self.E_cr]
+            )
+            h2_morphology = self.morph_hidden(
                 out[:, self.E_me + self.E_cr : self.E_me + self.E_cr + self.E_mr]
             )
-        )
-        h2_spatial_context = F.elu(
-            self.spatial_context_hidden(
+            h2_spatial_context = self.spatial_context_hidden(
                 out[
                     :,
                     self.E_me
@@ -236,9 +242,41 @@ class DecoderHMIVAE(nn.Module):
                     + self.E_sc,
                 ]
             )
-        )
 
-        # covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
+            # covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
+
+        else:
+            # standard decoder with activation functions (non-linear)
+            out = F.elu(self.input(z_s))
+            for net in self.linear:
+                out = F.elu(net(out))
+
+            # if self.leave_out_view is None:
+
+            h2_mean = F.elu(self.exp_hidden(out[:, 0 : self.E_me]))
+            h2_correlations = F.elu(
+                self.corr_hidden(out[:, self.E_me : self.E_me + self.E_cr])
+            )
+            h2_morphology = F.elu(
+                self.morph_hidden(
+                    out[:, self.E_me + self.E_cr : self.E_me + self.E_cr + self.E_mr]
+                )
+            )
+            h2_spatial_context = F.elu(
+                self.spatial_context_hidden(
+                    out[
+                        :,
+                        self.E_me
+                        + self.E_cr
+                        + self.E_mr : self.E_me
+                        + self.E_cr
+                        + self.E_mr
+                        + self.E_sc,
+                    ]
+                )
+            )
+
+            # covariates = out[:, self.E_me + self.E_cr + self.E_mr + self.E_sc :]
 
         mu_x_exp = self.mu_x_exp(h2_mean)
         std_x_exp = self.std_x_exp(h2_mean)

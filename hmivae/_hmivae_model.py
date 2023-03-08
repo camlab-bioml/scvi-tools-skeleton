@@ -279,6 +279,7 @@ class hmivaeModel(pl.LightningModule):
         is_trained_model: Optional[bool] = False,
         batch_correct: Optional[bool] = True,
         use_covs: Optional[bool] = True,
+        save_view_specific_embeddings: Optional[bool] = True,
     ) -> AnnData:
         """
         Gives the latent representation of each cell.
@@ -303,18 +304,46 @@ class hmivaeModel(pl.LightningModule):
                 image_correct=batch_correct,
             )
 
-            adata_train.obsm["VAE"] = self.module.inference(
-                data_train,
-                n_covariates=n_covariates,
-                use_covs=use_covs,
-                batch_correct=batch_correct,
-            )  # idx=train_idx)
-            adata_test.obsm["VAE"] = self.module.inference(
-                data_test,
-                n_covariates=n_covariates,
-                use_covs=use_covs,
-                batch_correct=batch_correct,
-            )  # idx=test_idx)
+            if save_view_specific_embeddings:
+                (
+                    adata_train.obsm["VAE"],
+                    adata_train.obsm["expression_embedding"],
+                    adata_train.obsm["correlation_embedding"],
+                    adata_train.obsm["morphology_embedding"],
+                    adata_train.obsm["spatial_context_embedding"],
+                ) = self.module.inference(
+                    data_train,
+                    n_covariates=n_covariates,
+                    use_covs=use_covs,
+                    batch_correct=batch_correct,
+                )  # idx=train_idx)
+
+                (
+                    adata_test.obsm["VAE"],
+                    adata_test.obsm["expression_embedding"],
+                    adata_test.obsm["correlation_embedding"],
+                    adata_test.obsm["morphology_embedding"],
+                    adata_test.obsm["spatial_context_embedding"],
+                ) = self.module.inference(
+                    data_test,
+                    n_covariates=n_covariates,
+                    use_covs=use_covs,
+                    batch_correct=batch_correct,
+                )  # idx=test_idx)
+
+            else:
+                adata_train.obsm["VAE"] = self.module.inference(
+                    data_train,
+                    n_covariates=n_covariates,
+                    use_covs=use_covs,
+                    batch_correct=batch_correct,
+                )  # idx=train_idx)
+                adata_test.obsm["VAE"] = self.module.inference(
+                    data_test,
+                    n_covariates=n_covariates,
+                    use_covs=use_covs,
+                    batch_correct=batch_correct,
+                )  # idx=test_idx)
 
             return ad.concat([adata_train, adata_test], uns_merge="first")
         else:

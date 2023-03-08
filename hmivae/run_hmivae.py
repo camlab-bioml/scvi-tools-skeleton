@@ -422,6 +422,8 @@ adata = model.get_latent_representation(  # use the best model to get the latent
 
 print("Doing cluster and neighbourhood enrichment analysis")
 
+print("Clustering using integrated space")
+
 sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="VAE", key_added="vae"
 )  # 100 nearest neighbours, will be used in downstream tests -- keep with PG
@@ -430,78 +432,109 @@ sc.pp.neighbors(
 
 sc.tl.leiden(adata, neighbors_key="vae")
 
-# k = 100 # choose k (number of nearest neighbours) -- keep consistent with n_neighbours above
-# sc.settings.verbose = 0
-# communities, graph, Q = phenograph.cluster(pd.DataFrame(adata.obsm['VAE']),k=k) # run PhenoGraph
-# # store the results in adata:
-# adata.obs['PhenoGraph_clusters'] = pd.Categorical(communities)
-# adata.uns['PhenoGraph_Q'] = Q
-# adata.uns['PhenoGraph_k'] = k
+print("Clustering using specific views")
 
-# # sc.tl.tsne(adata_new, use_rep='VAE')
-sc.tl.umap(adata, neighbors_key="vae")
+sc.pp.neighbors(
+    adata, n_neighbors=100, use_rep="expression_embedding", key_added="expression"
+)  # 100 nearest neighbours, will be used in downstream tests -- keep with PG
 
-# random_inds = np.random.choice(range(adata.X.shape[0]), 5000)
+# sc.pp.neighbors(adata, n_neighbors=100, use_rep="VAE", key_added="vae_100")
 
-# sc.pl.umap(adata[random_inds], color=['leiden'], show=False, save=f"_{args.cohort}_{args.beta_scheme}{args.hidden_dim_size}{args.latent_dim}_batchsize{args.batch_size}")
-
-# df = pd.DataFrame(adata.obsm['VAE'])
-
-# df.to_csv(
-#     os.path.join(
-#         args.output_dir,
-#         f"{args.cohort}_nhid{args.n_hidden}_hdim{args.hidden_dim_size}_lspace{args.latent_dim}_batchsize{args.batch_size}_randomseed{args.random_seed}.tsv"
-#         ),
-#         sep='\t')
-
-print("Ranking features across cluster")
-start1 = time.time()
-if "cell_id" not in adata.obs.columns:
-    print("Reset index to get cell_id column")
-    adata.obs = adata.obs.reset_index()
-
-
-# ranked_dict, fc_df =
-rank_features_in_groups(
+sc.tl.leiden(
     adata,
-    "leiden",
-    scale_values=False,
-    cofactor=args.cofactor,
-)  # no scaling required because using adata_train and test which have already been normalized and winsorized -- StandardScaler still applied
-fc_df = adata.uns["leiden_feature_scores"]
+    neighbors_key="expression",
+    key_added="expression_leiden",
+    random_state=args.random_seed,
+)
+
+sc.pp.neighbors(
+    adata, n_neighbors=100, use_rep="correlation_embedding", key_added="correlation"
+)
+
+sc.tl.leiden(
+    adata,
+    neighbors_key="correlation",
+    key_added="correlation_leiden",
+    random_state=args.random_seed,
+)
+
+sc.pp.neighbors(
+    adata, n_neighbors=100, use_rep="morphology_embedding", key_added="morphology"
+)
+
+sc.tl.leiden(
+    adata,
+    neighbors_key="morphology",
+    key_added="morphology_leiden",
+    random_state=args.random_seed,
+)
+
+sc.pp.neighbors(
+    adata,
+    n_neighbors=100,
+    use_rep="spatial_context_embedding",
+    key_added="spatial_context",
+)
+
+sc.tl.leiden(
+    adata,
+    neighbors_key="spatial_context",
+    key_added="spatial_context_leiden",
+    random_state=args.random_seed,
+)
+
+
+sc.tl.umap(adata, neighbors_key="vae", random_state=args.random_seed)
+
+
+# print("Ranking features across cluster")
+# start1 = time.time()
+# if "cell_id" not in adata.obs.columns:
+#     print("Reset index to get cell_id column")
+#     adata.obs = adata.obs.reset_index()
+
+
+# # ranked_dict, fc_df =
+# rank_features_in_groups(
+#     adata,
+#     "leiden",
+#     scale_values=False,
+#     cofactor=args.cofactor,
+# )  # no scaling required because using adata_train and test which have already been normalized and winsorized -- StandardScaler still applied
+# fc_df = adata.uns["leiden_feature_scores"]
 
 # #ranked_dict_pg, fc_df_pg =
 # rank_features_in_groups(
 #     adata, "PhenoGraph_clusters", scale_values=True, cofactor=args.cofactor,
 # )
 # fc_df_pg = adata.uns["PhenoGraph_clusters_feature_scores"]
-stop1 = time.time()
+# stop1 = time.time()
 
-print(f"\t ===> Finished ranking features across clusters in {stop1-start1} seconds")
+# print(f"\t ===> Finished ranking features across clusters in {stop1-start1} seconds")
 
-print("Sorting most common features")
+# print("Sorting most common features")
 
 # print('fc_df', fc_df)
 
-top5_leiden = top_common_features(fc_df)
+# top5_leiden = top_common_features(fc_df)
 
-if args.include_all_views:
+# if args.include_all_views:
 
-    top5_leiden.to_csv(
-        os.path.join(
-            args.output_dir, f"{args.cohort}_top5_features_across_clusters_leiden.tsv"
-        ),
-        sep="\t",
-    )
+#     top5_leiden.to_csv(
+#         os.path.join(
+#             args.output_dir, f"{args.cohort}_top5_features_across_clusters_leiden.tsv"
+#         ),
+#         sep="\t",
+#     )
 
-else:
-    top5_leiden.to_csv(
-        os.path.join(
-            args.output_dir,
-            f"{args.cohort}_top5_features_across_clusters_leiden_remove_{args.remove_view}.tsv",
-        ),
-        sep="\t",
-    )
+# else:
+#     top5_leiden.to_csv(
+#         os.path.join(
+#             args.output_dir,
+#             f"{args.cohort}_top5_features_across_clusters_leiden_remove_{args.remove_view}.tsv",
+#         ),
+#         sep="\t",
+#     )
 
 # top5_pg = top_common_features(fc_df_pg)
 
@@ -524,7 +557,7 @@ print("Neighbourhood enrichment analysis")
 
 sq.gr.spatial_neighbors(adata)
 sq.gr.nhood_enrichment(adata, cluster_key="leiden")
-sq.gr.nhood_enrichment(adata, cluster_key="PhenoGraph_clusters")
+# sq.gr.nhood_enrichment(adata, cluster_key="PhenoGraph_clusters")
 
 
 # sc.pl.umap(adata, color=['leiden', 'DNA1', 'panCK', 'CD45', 'Vimentin', 'CD3', 'CD20'], show=False, save=f"_{args.cohort}")

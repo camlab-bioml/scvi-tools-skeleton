@@ -227,6 +227,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--use_linear_decoder",
+    type=bool,
+    help="For using a linear decoder: True or False",
+    default=False,
+)
+
+parser.add_argument(
     "--cofactor", type=float, help="Cofactor for arcsinh transformation", default=1.0
 )
 
@@ -330,6 +337,7 @@ model = hmivaeModel(
     cohort=args.cohort,
     use_weights=args.use_weights,
     beta_scheme=args.beta_scheme,
+    linear_decoder=args.use_linear_decoder,
     n_covariates=n_covariates,
     batch_correct=args.batch_correct,
     batch_size=args.batch_size,
@@ -390,6 +398,7 @@ model = hmivaeModel(
     use_covs=args.use_covs,
     use_weights=args.use_weights,
     beta_scheme=args.beta_scheme,
+    linear_decoder=args.use_linear_decoder,
     n_covariates=n_covariates,
     batch_correct=args.batch_correct,
     batch_size=args.batch_size,

@@ -39,6 +39,7 @@ class hmiVAE(pl.LightningModule):
         ] = None,
         use_covs: bool = False,
         use_weights: bool = True,
+        linear_decoder: Optional[bool] = False,
         n_hidden: int = 1,
         beta_scheme: Optional[Literal["constant", "warmup"]] = "warmup",
         batch_correct: bool = True,
@@ -93,6 +94,7 @@ class hmiVAE(pl.LightningModule):
             n_covariates=n_covariates,
             leave_out_view=leave_out_view,
             n_hidden=n_hidden,
+            linear_decoder=linear_decoder,
         )
 
         self.save_hyperparameters(ignore=["adata"])

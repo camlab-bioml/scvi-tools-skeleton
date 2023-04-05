@@ -1,18 +1,20 @@
 ## run with hmivae
-
 import argparse
 import os
 import time
 from collections import OrderedDict
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 # import phenograph
 import scanpy as sc
+import seaborn as sns
 import squidpy as sq
 import torch
 import wandb
+from anndata import AnnData
 from rich.progress import (  # track,
     BarColumn,
     Progress,
@@ -26,6 +28,31 @@ from statsmodels.api import OLS, add_constant
 
 # import hmivae
 from hmivae._hmivae_model import hmivaeModel
+from hmivae.ScModeDataloader import ScModeDataloader
+
+
+def arrange_features(vars_lst, adata):
+
+    arranged_features = {"E": [], "C": [], "M": [], "S": []}
+    orig_list = vars_lst
+
+    for i in orig_list:
+
+        if i in adata.var_names:
+            arranged_features["E"].append(i)
+        elif i in adata.uns["names_morphology"]:
+            arranged_features["M"].append(i)
+        elif i in adata.uns["names_correlations"]:
+            arranged_features["C"].append(i)
+        else:
+            arranged_features["S"].append(i)
+    arr_list = [
+        *np.sort(arranged_features["E"]).tolist(),
+        *np.sort(arranged_features["C"]).tolist(),
+        *np.sort(arranged_features["M"]).tolist(),
+        *np.sort(arranged_features["S"]).tolist(),
+    ]
+    return arranged_features, arr_list
 
 
 def create_cluster_dummy(adata, cluster_col, cluster):
@@ -431,30 +458,32 @@ adata = model.get_latent_representation(  # use the best model to get the latent
 
 print("Doing cluster and neighbourhood enrichment analysis")
 
-print("Clustering using integrated space")
+print("===> Clustering using integrated space")
 
 sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="VAE", key_added="vae"
 )  # 100 nearest neighbours, will be used in downstream tests -- keep with PG
 
-# sc.pp.neighbors(adata, n_neighbors=100, use_rep="VAE", key_added="vae_100")
 
 sc.tl.leiden(adata, neighbors_key="vae")
 
-print("Clustering using specific views")
+print("===> Clustering using specific views")
+
+print("Expression")
 
 sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="expression_embedding", key_added="expression"
 )  # 100 nearest neighbours, will be used in downstream tests -- keep with PG
-
-# sc.pp.neighbors(adata, n_neighbors=100, use_rep="VAE", key_added="vae_100")
 
 sc.tl.leiden(
     adata,
     neighbors_key="expression",
     key_added="expression_leiden",
     random_state=args.random_seed,
-)
+    resolution=0.5,
+)  # expression wasn't too bad
+
+print("Correlation")
 
 sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="correlation_embedding", key_added="correlation"
@@ -465,7 +494,9 @@ sc.tl.leiden(
     neighbors_key="correlation",
     key_added="correlation_leiden",
     random_state=args.random_seed,
-)
+)  # probably no need to change correlation because there were few anyways
+
+print("Morphology")
 
 sc.pp.neighbors(
     adata, n_neighbors=100, use_rep="morphology_embedding", key_added="morphology"
@@ -476,7 +507,10 @@ sc.tl.leiden(
     neighbors_key="morphology",
     key_added="morphology_leiden",
     random_state=args.random_seed,
-)
+    resolution=0.1,
+)  # pull it way down because there were LOTS of clusters
+
+print("Spatial context")
 
 sc.pp.neighbors(
     adata,
@@ -490,106 +524,218 @@ sc.tl.leiden(
     neighbors_key="spatial_context",
     key_added="spatial_context_leiden",
     random_state=args.random_seed,
+    resolution=0.5,
 )
 
+print("===> Creating UMAPs")
+
+print("Integrated space")
 
 sc.tl.umap(adata, neighbors_key="vae", random_state=args.random_seed)
 
+adata.obsm["X_umap_int"] = adata.obsm["X_umap"].copy()
 
-# print("Ranking features across cluster")
-# start1 = time.time()
-# if "cell_id" not in adata.obs.columns:
-#     print("Reset index to get cell_id column")
-#     adata.obs = adata.obs.reset_index()
+print("Expression")
 
+sc.tl.umap(adata, neighbors_key="expression", random_state=args.random_seed)
 
-# # ranked_dict, fc_df =
+adata.obsm["X_umap_exp"] = adata.obsm["X_umap"].copy()
+
+print("Correlations")
+
+sc.tl.umap(adata, neighbors_key="correlation", random_state=args.random_seed)
+
+adata.obsm["X_umap_corr"] = adata.obsm["X_umap"].copy()
+
+print("Morphology")
+
+sc.tl.umap(adata, neighbors_key="morphology", random_state=args.random_seed)
+
+adata.obsm["X_umap_morph"] = adata.obsm["X_umap"].copy()
+
+print("Spatial context")
+
+sc.tl.umap(adata, neighbors_key="spatial_context", random_state=args.random_seed)
+
+adata.obsm["X_umap_spct"] = adata.obsm["X_umap"].copy()
+# ranked_dict, fc_df =
 # rank_features_in_groups(
-#     adata,
-#     "leiden",
-#     scale_values=False,
-#     cofactor=args.cofactor,
+#     adata, "leiden", scale_values=False, cofactor=args.cofactor,
 # )  # no scaling required because using adata_train and test which have already been normalized and winsorized -- StandardScaler still applied
 # fc_df = adata.uns["leiden_feature_scores"]
-
-# #ranked_dict_pg, fc_df_pg =
-# rank_features_in_groups(
-#     adata, "PhenoGraph_clusters", scale_values=True, cofactor=args.cofactor,
-# )
-# fc_df_pg = adata.uns["PhenoGraph_clusters_feature_scores"]
-# stop1 = time.time()
-
-# print(f"\t ===> Finished ranking features across clusters in {stop1-start1} seconds")
-
-# print("Sorting most common features")
-
-# print('fc_df', fc_df)
 
 # top5_leiden = top_common_features(fc_df)
 
 # if args.include_all_views:
 
 #     top5_leiden.to_csv(
-#         os.path.join(
-#             args.output_dir, f"{args.cohort}_top5_features_across_clusters_leiden.tsv"
-#         ),
-#         sep="\t",
-#     )
-
-# else:
-#     top5_leiden.to_csv(
-#         os.path.join(
-#             args.output_dir,
-#             f"{args.cohort}_top5_features_across_clusters_leiden_remove_{args.remove_view}.tsv",
-#         ),
-#         sep="\t",
-#     )
-
-# top5_pg = top_common_features(fc_df_pg)
-
-# if args.include_all_views:
-
-#     top5_pg.to_csv(
-#         os.path.join(args.output_dir, f"{args.cohort}_top5_features_across_clusters_pg.tsv"),
-#         sep="\t",
-#     )
-
-# else:
-#     top5_pg.to_csv(
-#         os.path.join(args.output_dir, f"{args.cohort}_top5_features_across_clusters_pg_remove_{args.remove_view}.tsv"),
+#         os.path.join(args.output_dir, f"{args.cohort}_top5_features_across_clusters_leiden.tsv"),
 #         sep="\t",
 #     )
 
 print("Neighbourhood enrichment analysis")
 
-# sq.gr.co_occurrence(adata, cluster_key="leiden")  # if it works, it works
+# sq.gr.co_occurrence(adata, cluster_key="leiden")  # if it works, it works -- didn't work, always NaNs
 
 sq.gr.spatial_neighbors(adata)
 sq.gr.nhood_enrichment(adata, cluster_key="leiden")
-# sq.gr.nhood_enrichment(adata, cluster_key="PhenoGraph_clusters")
 
 
-# sc.pl.umap(adata, color=['leiden', 'DNA1', 'panCK', 'CD45', 'Vimentin', 'CD3', 'CD20'], show=False, save=f"_{args.cohort}")
+print("===> Create the neighbourhood features")
 
-stopa = time.time()
+h5 = adata.copy()
 
-log_file.write(f"All analysis done in {(stopa-starta)/60} minutes")
+sc.pp.neighbors(
+    h5, use_rep="spatial", n_neighbors=10
+)  # get spatial neighbour connectivities, we lose this when we make the new adata
 
-log_file.close()
+data = ScModeDataloader(h5)
 
-# print("old", adata.uns.keys())
+spatial_context = data.C.numpy()
 
-# new_uns = {str(k):v for k,v in adata.uns.items()}
+spatial_context_names = [
+    "neighbour_" + i
+    for i in list(h5.var_names)
+    + h5.uns["names_correlations"].tolist()
+    + h5.uns["names_morphology"].tolist()
+]
 
-# print("new", new_uns.keys())
+print("===> Creating new adata and ranking all features")
 
-# # adata.uns = new_uns
+clustering = [i for i in h5.obs.columns if "leiden" in i]
+
+all_features = np.concatenate(
+    [h5.X, h5.obsm["correlations"], h5.obsm["morphology"], spatial_context], axis=1
+)
+
+names = np.concatenate(
+    [
+        h5.var_names,
+        h5.uns["names_correlations"],
+        h5.uns["names_morphology"],
+        spatial_context_names,
+    ]
+)
+
+all_features_df = pd.DataFrame(all_features, columns=names)
+
+
+new_adata = AnnData(
+    X=all_features_df,
+    obs=h5.copy().obs,
+    obsm=h5.copy().obsm,
+    obsp=h5.copy().obsp,
+    uns=h5.copy().uns,
+)
+
+for cl in clustering:
+    print(f"Ranking features for clustering: {cl}")
+    sc.tl.rank_genes_groups(new_adata, groupby=cl, key_added=f"{cl}_rank_gene_groups")
+
+dfs = []
+
+for cl in clustering:
+    ranked_df = sc.get.rank_genes_groups_df(
+        new_adata, group=None, key=f"{cl}_rank_gene_groups"
+    )
+
+    ranked_df["clustering"] = [cl] * ranked_df.shape[0]
+
+    dfs.append(ranked_df)
+
+full_ranked_df = pd.concat(dfs)
+
+## get the top features across all the different clustering
+
+dfs2 = {}
+
+for cl in clustering:
+    print(f"sorting ranked features for {cl}")
+    fs = []
+    features_df = full_ranked_df.copy().query("clustering==@cl")
+    for group in features_df.group.unique():
+        group_df = features_df.query("group==@group")
+        top10 = group_df.names.tolist()[0:10]  # these are sorted by top
+
+        for f in top10:
+            fs.append(f)
+
+    top_features = list(set(fs))
+
+    new_df = pd.DataFrame({})
+
+    for group in features_df.group.unique():
+        group_df = features_df.query("group==@group")
+
+        # print('df shape', group_df.shape[0])
+
+        scores = (
+            group_df.loc[group_df.names.isin(top_features), ["names", "scores"]]
+            .set_index("names")
+            .sort_index()
+            .scores.tolist()
+        )
+
+        new_df[group] = scores
+
+    # print(group, new_df.shape)
+
+    new_df.index = np.sort(top_features)
+
+    arr_features2, arr_list2 = arrange_features(new_df.index.to_list(), adata)
+
+    new_df = new_df.reindex(arr_list2)
+
+    new_df.columns = new_df.columns.map(int)
+
+    new_df = new_df[np.sort(new_df.columns)]
+
+    # new_df['clustering'] = [cl]*new_df.shape[0]
+
+    dfs2[cl] = new_df
+
+cmap = sns.diverging_palette(220, 20, as_cmap=True)
+
+for n, cl in enumerate(clustering):
+    # print(n)
+    # bx = plt.subplot(6,1,n+1)
+    sns.clustermap(
+        dfs2[cl].fillna(0),
+        row_cluster=False,
+        center=0.00,
+        cmap=cmap,
+        vmin=-100,
+        vmax=100,
+        figsize=(25, 25),
+        linewidth=2,
+        linecolor="black",
+    )
+
+    # plt.title(f"rankings for {cl}")
+
+    plt.savefig(f"{args.cohort}_cluster_rankings_for_{cl}.png")
+
+print("old", new_adata.uns.keys())
+
+new_uns = {str(k): v for k, v in new_adata.uns.items()}
+
+print("new", new_uns.keys())
+
+adata.uns = new_uns
 
 if args.include_all_views:
-    adata.obs.to_csv(
+    new_adata.obs.to_csv(
         os.path.join(args.output_dir, f"{args.cohort}_clusters.tsv"), sep="\t"
     )
-    adata.write(os.path.join(args.output_dir, f"{args.cohort}_adata_new.h5ad"))
+    new_adata.write(os.path.join(args.output_dir, f"{args.cohort}_adata_new.h5ad"))
+    full_ranked_df.to_csv(
+        os.path.join(args.output_dir, f"{args.cohort}_clusters_ranked_features.tsv"),
+        sep="\t",
+    )
+
+# if args.include_all_views:
+#     adata.obs.to_csv(os.path.join(args.output_dir, f"{args.cohort}_clusters.tsv"), sep="\t")
+#     adata.write(os.path.join(args.output_dir, f"{args.cohort}_adata_new.h5ad"))
 
 else:
     adata.obs.to_csv(
@@ -603,3 +749,6 @@ else:
             args.output_dir, f"{args.cohort}_adata_remove_{args.remove_view}.h5ad"
         )
     )
+
+
+# sc.pl.umap(adata[random_inds], color=['leiden'], show

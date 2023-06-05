@@ -76,7 +76,10 @@ exception_variables = []
 
 dfs = []
 
-for cvar in clinical_variables:
+# cvar is clinical variable 
+# sub_cvar are the values the clincal variable can take on e.g. for cvar == ERStatus, sub_cvar == pos or sub_cvar == neg 
+
+for cvar in clinical_variables: # using all latent dims for this pass
     cvar_dfs = []
 
     for sub_cvar in patient_latent[cvar].unique():
@@ -85,13 +88,13 @@ for cvar in clinical_variables:
         selected_df = patient_latent.copy()[
             ~patient_latent[cvar].isna()
         ]  # drop nan values for each var
-        selected_df[cvar] = list(map(int, selected_df[cvar] == sub_cvar))
+        selected_df[cvar] = list(map(int, selected_df[cvar] == sub_cvar)) # map 1 and 0 for entries that belong to the sub_cvar
 
         X = selected_df[
             latent_dim_cols
         ].to_numpy()  # select columns corresponding to latent dims and convert to numpy
         X = sm.add_constant(X)  # add constant
-        y = selected_df[
+        y = selected_df[ # this is the 0 and 1 col
             cvar
         ].to_numpy()  # select the clinical variable column and convert to numpy -- no fillna(0) since all the nans should have been dropped
         try:
@@ -130,7 +133,7 @@ for cvar, sub_cvar in exception_variables:
     ].to_numpy()  # select columns corresponding to latent dims and convert to numpy
 
     perf_sep_features = []
-    for i in range(X.shape[1]):
+    for i in range(X.shape[1]): # introduce each latent dim one at a time to see which caused issues
         X_1 = X.copy()[:, 0 : i + 1]
         X_1 = sm.add_constant(X_1)  # add constant
         try:
@@ -141,7 +144,7 @@ for cvar, sub_cvar in exception_variables:
             # print(log_reg.summary())
         except Exception as e:
             print(f"{cvar}:{sub_cvar} for feature {i} has exception: {e}")
-            perf_sep_features.append(i)
+            perf_sep_features.append(i) # store the issue causing latent dim
 
     # if len(perf_sep_features) == 0:
     #     sub_cvar_df = pd.DataFrame({})
@@ -173,11 +176,11 @@ for cvar, sub_cvar, del_inds in features_to_remove:
         latent_dim_cols
     ].to_numpy()  # select columns corresponding to latent dims and convert to numpy
     del_inds = del_inds
-    X = np.delete(X, del_inds, axis=1)
+    X = np.delete(X, del_inds, axis=1) # delete the issue causing latent dims from full set
     print(X.shape)
     X = sm.add_constant(X)  # add constant
     try:
-        log_reg = sm.Logit(y, X).fit()  # fit the Logistic Regression model
+        log_reg = sm.Logit(y, X).fit()  # fit the Logistic Regression model on the remaining latent dims
         print(
             f"Completed: tvalues for {cvar}:{sub_cvar}, features till {i} -> {log_reg.tvalues}"
         )
@@ -187,7 +190,7 @@ for cvar, sub_cvar, del_inds in features_to_remove:
 
         tvalues = log_reg.tvalues[1:].tolist()  # + [np.nan]
 
-        for i in del_inds:
+        for i in del_inds: # for latent dims that caused issues, store their tvalues as nan so we know which ones didn't work
             if i > len(tvalues):
                 tvalues = np.insert(tvalues, i - 1, np.nan)
             else:
@@ -238,7 +241,7 @@ hi_or_low = clusters_patient[[patient_col, cluster_col]]
 hi_or_low = hi_or_low.groupby([patient_col, cluster_col]).size().unstack(fill_value=0)
 
 
-hi_or_low = hi_or_low.div(hi_or_low.sum(axis=1), axis=0).fillna(0)
+hi_or_low = hi_or_low.div(hi_or_low.sum(axis=1), axis=0).fillna(0) # get proportion of each cluster in each patient (all will sum to 1)
 
 
 hi_low_cluster_variables = (
@@ -278,7 +281,7 @@ for cvar in clinical_variables:
             prop_cluster_cols
         ].to_numpy()  # select columns corresponding to latent dims and convert to numpy
         tvalues = {}
-        for cluster in range(X.shape[1]):
+        for cluster in range(X.shape[1]): # do each cluster one by one since these add up to 1 and Logit won't work
             X1 = X[:, cluster]
             X1 = sm.add_constant(X1)
             try:
@@ -345,18 +348,18 @@ with progress:
         s_cluster_prevs = {}
         mask = tifffile.imread(
             f"../../../data/{cohort_dirs[cohort][0]}/{sample}{cohort_dirs[cohort][1]}"
-        )
+        ) # get dims of the image 
         sample_df = adata_df.copy().query("Sample_name==@sample")
         for cluster in clusters:
             num_cells_in_sample = Counter(sample_df.leiden.tolist())
-            num_cells_in_clusters = num_cells_in_sample[cluster]
+            num_cells_in_clusters = num_cells_in_sample[cluster] # get number of cells belong to each cluster for each image
 
             # print(num_cells_in_clusters)
             # print(mask.shape[0] , mask.shape[1])
 
             cluster_prevalance_per_mm2 = (
                 num_cells_in_clusters / (mask.shape[0] * mask.shape[1])
-            ) * 1e6  # scale, 1 pixel == 1 micron
+            ) * 1e6  # scale, 1 pixel == 1 micron, get the prevalence and scale
 
             s_cluster_prevs[cluster] = cluster_prevalance_per_mm2
 
@@ -409,7 +412,7 @@ for cvar in clinical_variables:
             cvar
         ].to_numpy()  # select the clinical variable column and convert to numpy -- no fillna(0) since all the nans should have been dropped
         try:
-            log_reg = sm.Logit(y, X).fit()  # fit the Logistic Regression model
+            log_reg = sm.Logit(y, X).fit()  # fit the Logistic Regression model, doing them altogether this time, not one by one because don't need to
 
             sub_cvar_df["cluster"] = [c for c in cluster_cols]
 
@@ -421,7 +424,7 @@ for cvar in clinical_variables:
 
             cvar_dfs.append(sub_cvar_df)
         except Exception as e:
-            exception_variables.append((cvar, sub_cvar))
+            exception_variables.append((cvar, sub_cvar)) # I keep a track of the exception variables but I don't deal with them
             print(f"{cvar}:{sub_cvar} had an exception occur: {e}")
 
     full_cvar_dfs = pd.concat(cvar_dfs)
